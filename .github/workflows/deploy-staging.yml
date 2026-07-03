@@ -1,0 +1,113 @@
+name: Deploy → Staging
+
+# Canonical staging deploy for every SPD project. Hosted here — see ci.yml's
+# header comment for why. workflow_call-only; the calling repo's own
+# run-deploy-staging.yml (or deploy-staging.yml, for leaf-consumer repos)
+# declares the actual `push: branches: [staging]` trigger.
+#
+# Two sequential phases:
+#   1. deploy — build + push to Cloudflare Pages staging
+#   2. smoke  — run @smoke tests against the live staging URL (behaviour
+#      only, --ignore-snapshots — pixel comparison is ci.yml's job)
+#
+# No third "promote" phase — this repo's own webhook handler already
+# opens/refreshes the staging → prod PR itself the instant this push lands,
+# independent of whether smoke passes. Smoke failing here doesn't block
+# that PR from existing, only from being safe to merge — a human's call
+# when reviewing (staging → prod is never auto-merged).
+
+on:
+  workflow_call:
+    inputs:
+      sync-shared-contracts:
+        description: 'Copy supabase/functions/_shared/contracts.ts to src/types/shared-contracts.ts before building'
+        type: boolean
+        default: false
+      staging-url:
+        description: 'Live staging URL to smoke-test against'
+        type: string
+        required: true
+
+concurrency:
+  group: deploy-staging
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ── Phase 1: Build + deploy to Cloudflare Pages ───────────────────────────
+  deploy:
+    name: Build + Deploy to Cloudflare Pages (staging)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: staging   # tracking only — no required reviewers, unlike production
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Sync shared-contracts.ts
+        if: inputs.sync-shared-contracts
+        run: cp supabase/functions/_shared/contracts.ts src/types/shared-contracts.ts || true
+
+      - name: TypeScript check
+        run: bun run typecheck
+
+      - name: Build
+        run: bun run build
+        env:
+          VITE_SUPABASE_URL:      ${{ vars.VITE_SUPABASE_URL      || secrets.STAGING_SUPABASE_URL      || 'https://placeholder.supabase.co' }}
+          VITE_SUPABASE_ANON_KEY: ${{ vars.VITE_SUPABASE_ANON_KEY || secrets.STAGING_SUPABASE_ANON_KEY || 'placeholder_anon_key' }}
+
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken:  ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command:   pages deploy dist --project-name=${{ vars.CLOUDFLARE_PROJECT_NAME }} --branch=staging
+
+  # ── Phase 2: Smoke test against the live staging URL ──────────────────────
+  smoke:
+    name: Staging smoke gate
+    needs: deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Install Playwright (chromium)
+        run: bunx playwright install --with-deps chromium
+
+      # Give Cloudflare Pages ~30s to propagate the new deployment
+      - name: Wait for staging to be live
+        run: sleep 30
+
+      - name: Smoke test against live staging URL
+        run: bunx playwright test --grep @smoke --ignore-snapshots
+        env:
+          BASE_URL:               ${{ inputs.staging-url }}
+          VITE_SUPABASE_URL:      ${{ vars.VITE_SUPABASE_URL      || secrets.STAGING_SUPABASE_URL      || 'https://placeholder.supabase.co' }}
+          VITE_SUPABASE_ANON_KEY: ${{ vars.VITE_SUPABASE_ANON_KEY || secrets.STAGING_SUPABASE_ANON_KEY || 'placeholder_anon_key' }}
+
+      - name: Upload smoke report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: staging-smoke-report
+          path: |
+            review/
+            review/artifacts/
+          retention-days: 7

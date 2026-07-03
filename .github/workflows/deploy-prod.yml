@@ -1,0 +1,162 @@
+name: Deploy → Production
+
+# Canonical production deploy for every SPD project. Hosted here — see
+# ci.yml's header comment for why. workflow_call-only; the calling repo's
+# own run-deploy-prod.yml (or deploy-prod.yml, for leaf-consumer repos)
+# declares the actual `push: branches: [prod]` + `workflow_dispatch`
+# triggers.
+#
+# TWO human gates between staging and prod, deliberately both kept:
+#   1. Reviewing and approving the staging → prod PR itself (this repo's
+#      webhook handler opens/refreshes it, never auto-merges it).
+#   2. This workflow's own `environment: production` gate below — a
+#      second, separate checkpoint, redundant with #1 on purpose. Resolves
+#      against the CALLING repo's own "production" environment + its own
+#      required reviewers — a downstream project still needs to configure
+#      that itself, this file doesn't supply one for it.
+#
+# Version scheme: date-based tags, vYYYY.MM.DD.N, computed at deploy time.
+# After a successful deploy this also writes a CHANGELOG.md entry and bumps
+# package.json's version, then pushes that documentation commit directly to
+# prod. That push needs a bypass-actor on prod's branch protection — see
+# the PR_BOT_TOKEN note below. If PR_BOT_TOKEN isn't set (falls back to
+# GITHUB_TOKEN), this step fails loudly but does NOT fail the deploy that
+# already happened above it.
+
+on:
+  workflow_call:
+    inputs:
+      sync-shared-contracts:
+        description: 'Copy supabase/functions/_shared/contracts.ts to src/types/shared-contracts.ts before building'
+        type: boolean
+        default: false
+
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false   # never cancel a prod deploy mid-flight
+
+permissions:
+  contents: write   # for pushing the git tag
+
+jobs:
+  deploy:
+    name: Deploy to Cloudflare Pages (prod)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    # Producer's one-click gate. Configure at:
+    # GitHub → Settings → Environments → production → Required reviewers
+    environment: production
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history so git tag push + changelog diff work
+          # PR_BOT_TOKEN, not the default token — github-actions[bot] isn't
+          # a selectable bypass-actor on most repos' branch protection, only
+          # installed Apps and real accounts are. Falling back to
+          # GITHUB_TOKEN keeps the job running even if the secret isn't set
+          # yet; it just means the pushes below fail against a protected
+          # prod branch until PR_BOT_TOKEN exists.
+          token: ${{ secrets.PR_BOT_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Create and push git tag
+        id: stamp
+        run: |
+          DATE="$(date -u +%Y.%m.%d)"
+          git fetch --tags --quiet
+          N=$(( $(git tag -l "v${DATE}.*" | wc -l | tr -d ' ') + 1 ))
+          TAG="v${DATE}.${N}"
+          SHA="${GITHUB_SHA::7}"
+          ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag "$TAG" -m "Deploy ${TAG} · ${SHA} · ${ISO}"
+          git push origin "$TAG"
+          echo "tag=${TAG}"  >> "$GITHUB_OUTPUT"
+          echo "sha=${SHA}"  >> "$GITHUB_OUTPUT"
+          echo "iso=${ISO}"  >> "$GITHUB_OUTPUT"
+          echo "✓ Tagged ${TAG}"
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Sync shared-contracts.ts
+        if: inputs.sync-shared-contracts
+        run: cp supabase/functions/_shared/contracts.ts src/types/shared-contracts.ts || true
+
+      - name: TypeScript check
+        run: bun run typecheck
+
+      - name: Build
+        run: bun run build
+        env:
+          VITE_SUPABASE_URL:      ${{ vars.PROD_SUPABASE_URL      || secrets.PROD_SUPABASE_URL      || 'https://placeholder.supabase.co' }}
+          VITE_SUPABASE_ANON_KEY: ${{ vars.PROD_SUPABASE_ANON_KEY || secrets.PROD_SUPABASE_ANON_KEY || 'placeholder_anon_key' }}
+          VITE_BUILD_TAG:         ${{ steps.stamp.outputs.tag }}
+          VITE_BUILD_SHA:         ${{ steps.stamp.outputs.sha }}
+          VITE_BUILD_TIME:        ${{ steps.stamp.outputs.iso }}
+
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken:  ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command:   pages deploy dist --project-name=${{ vars.CLOUDFLARE_PROJECT_NAME }} --branch=prod
+
+      - name: Update CHANGELOG.md + package.json version
+        # The deploy above already succeeded — this is documentation, not a
+        # gate. Don't fail the workflow over a doc-commit push that needs a
+        # one-time bypass-actor setting; fail loudly in the log instead.
+        run: |
+          node <<'NODESCRIPT'
+          const fs = require('fs')
+          const { execSync } = require('child_process')
+
+          const tag     = process.env.TAG
+          const version = tag.replace(/^v/, '')
+          const when    = new Date().toISOString().replace('T', ' ').slice(0, 16) + ' UTC'
+
+          let prevTag = ''
+          try {
+            prevTag = execSync('git describe --tags --abbrev=0 HEAD^', { encoding: 'utf8' }).trim()
+          } catch { /* first-ever tag — no previous one to diff against */ }
+
+          const logCmd = prevTag
+            ? `git log ${prevTag}..HEAD --pretty=format:"- %s (%h)" --no-merges`
+            : `git log --pretty=format:"- %s (%h)" --no-merges -20`
+          const commits = execSync(logCmd, { encoding: 'utf8' }).trim() || '- (no commits found)'
+
+          const entry  = `## ${tag} — ${when}\n\n${commits}\n`
+          const marker = '<!-- New entries are inserted directly below this line by deploy-prod.yml -->'
+          const changelog = fs.readFileSync('CHANGELOG.md', 'utf8')
+          if (!changelog.includes(marker)) throw new Error('CHANGELOG.md marker comment not found — check it wasn\'t edited away')
+          fs.writeFileSync('CHANGELOG.md', changelog.replace(marker, `${marker}\n\n${entry}`))
+
+          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'))
+          pkg.version = version
+          fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n')
+
+          console.log(`✓ CHANGELOG.md + package.json updated for ${tag}`)
+          NODESCRIPT
+
+          git add CHANGELOG.md package.json
+          git commit -m "docs: release ${TAG} [skip ci]"
+
+          if git push origin prod; then
+            echo "✓ Release documentation committed to prod"
+          else
+            echo "⚠  Could not push the CHANGELOG/version commit to prod."
+            echo "   1. Repo secret PR_BOT_TOKEN must be a fine-grained PAT"
+            echo "      (Contents: Read and write, scoped to this repo)."
+            echo "   2. That PAT's owning account must be on prod's bypass list:"
+            echo "      Settings → Branches → prod → Allow specified actors to"
+            echo "      bypass required pull requests → add your account."
+            echo "   The deploy above already succeeded — only this doc commit is stuck."
+          fi
+        env:
+          TAG: ${{ steps.stamp.outputs.tag }}

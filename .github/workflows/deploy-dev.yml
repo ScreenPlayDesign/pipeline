@@ -1,0 +1,72 @@
+name: Deploy → Dev preview
+
+# Canonical dev-preview deploy for every SPD project. Hosted here, not in
+# any project or in foundation-template — see ci.yml's header comment for
+# why. workflow_call-only; the calling repo's own run-deploy-dev.yml (or
+# deploy-dev.yml, for simpler leaf-consumer repos that don't themselves get
+# referenced by anyone else) declares the actual `push: branches: [dev]`
+# trigger.
+#
+# Deploys using STAGING Supabase credentials — not separate dev ones — on
+# purpose: dev and staging previews are meant to be directly comparable
+# (same backend data, different frontend code), so the dev → staging
+# standing PR (opened/merged by this repo's own webhook handler) can be
+# reviewed just by opening both URLs side by side, without a schema/data
+# mismatch confusing the diff.
+#
+# No smoke gate, no PR-opening logic here — that's this repo's job
+# (handlers.ts), not a workflow file's. This is a preview deploy, nothing
+# more.
+
+on:
+  workflow_call:
+    inputs:
+      sync-shared-contracts:
+        description: 'Copy supabase/functions/_shared/contracts.ts to src/types/shared-contracts.ts before building (projects that generate frontend types from their edge functions)'
+        type: boolean
+        default: false
+
+concurrency:
+  group: deploy-dev
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Build + Deploy to Cloudflare Pages (dev)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: dev-preview   # tracking only — no required reviewers; resolves against the CALLER's own environment
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Sync shared-contracts.ts
+        if: inputs.sync-shared-contracts
+        run: cp supabase/functions/_shared/contracts.ts src/types/shared-contracts.ts || true
+
+      - name: TypeScript check
+        run: bun run typecheck
+
+      - name: Build
+        run: bun run build
+        env:
+          # Deliberately the STAGING vars — see header comment. dev and
+          # staging previews share one backend on purpose.
+          VITE_SUPABASE_URL:      ${{ vars.VITE_SUPABASE_URL      || secrets.STAGING_SUPABASE_URL      || 'https://placeholder.supabase.co' }}
+          VITE_SUPABASE_ANON_KEY: ${{ vars.VITE_SUPABASE_ANON_KEY || secrets.STAGING_SUPABASE_ANON_KEY || 'placeholder_anon_key' }}
+
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken:  ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command:   pages deploy dist --project-name=${{ vars.CLOUDFLARE_PROJECT_NAME }} --branch=dev

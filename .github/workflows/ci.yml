@@ -1,0 +1,149 @@
+name: ci
+
+# Canonical CI gate for every SPD project — plain typecheck + Playwright,
+# pass or fail by exit code, no AI/LLM involvement anywhere in this file on
+# purpose. Hosted HERE — in spd/pipeline, a repo that contains nothing but
+# this handful of reusable workflow files — not in any project repo, not in
+# foundation-template, and not in spd/github-app either.
+#
+# Two separate reasons this is its own repo, not folded into an existing one:
+#  1. foundation-template is itself starter code that gets cloned wholesale
+#     into new projects — CI logic that's supposed to apply platform-wide
+#     shouldn't be entangled with "a thing that gets copied to start a
+#     project," even referenced by pointer instead of copy-paste.
+#  2. github-app hosts the platform's orchestration service (webhook
+#     handling, standing-PR sync, provisioning) — real business logic, kept
+#     private on purpose. This repo has to be PUBLIC instead: some SPD
+#     projects live in GitHub organizations other than ScreenPlayDesign, and
+#     GitHub's reusable-workflow `uses:` mechanism only allows a cross-org
+#     reference when the source repo is public — a private repo's reusable
+#     workflows can only be called from within the same org. Keeping this
+#     repo to nothing but CI/deploy YAML (no secret values, no orchestration
+#     internals — secrets always resolve against the CALLER's own runtime,
+#     never live here) means going public costs nothing sensitive.
+#
+# Every consuming repo — foundation-template, web-dashboard, every future
+# client project, regardless of which org it lives in — keeps only a thin
+# run-ci.yml (or, for simple cases, a ci.yml that's just a trigger + this
+# call) that does nothing but declare its own trigger and its own
+# project-specific inputs, then calls:
+#   uses: ScreenPlayDesign/pipeline/.github/workflows/ci.yml@main
+#
+# `vars.*`/`secrets.*` referenced below resolve against whichever repo's
+# workflow run is actually calling this — the CALLER's own variables and
+# secrets, not this repo's — so one shared file serves every project's own
+# config without `inputs:` plumbing for values that already sit in the
+# caller's repo settings. Falls back across two naming conventions
+# (VITE_SUPABASE_URL as a var, or the older STAGING_SUPABASE_URL as a
+# secret) so existing projects don't need a rename before this works.
+#
+# Two parallel jobs, not one combined job — typecheck/build and the
+# Playwright visual gate run concurrently. The check names a repo's branch
+# protection needs in its required-status-checks list are whatever the
+# CALLING job-id composites with the names below, e.g.
+# "ci / TypeScript + Build smoke test" and "ci / Gherkin + Playwright visual
+# gate" if the caller names its job "ci". That composite-name change is the
+# one real cost of adopting this pattern — update branch protection in the
+# same sitting as switching a repo's workflow files over.
+
+on:
+  workflow_call:
+    inputs:
+      verify-shared-contracts:
+        description: 'Fail fast if src/types/shared-contracts.ts is missing (projects that sync generated Supabase edge-function types into the frontend)'
+        type: boolean
+        default: false
+      target-url:
+        description: 'Base URL for the visual gate to test against (a deployed dev/staging/prod preview). Leave blank to let Playwright boot its own local dev server instead.'
+        type: string
+        default: ''
+
+jobs:
+  typecheck-build:
+    name: TypeScript + Build smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Verify shared-contracts.ts present
+        if: inputs.verify-shared-contracts
+        run: |
+          if [[ ! -f src/types/shared-contracts.ts ]]; then
+            echo "❌  src/types/shared-contracts.ts is missing."
+            echo "    Run sync-contracts.sh (or the deploy workflow's sync step) and commit the result."
+            exit 1
+          fi
+
+      - name: TypeScript check
+        run: bun run typecheck
+
+      - name: Build smoke test
+        run: bun run build
+        env:
+          VITE_SUPABASE_URL:      ${{ vars.VITE_SUPABASE_URL      || secrets.STAGING_SUPABASE_URL      || 'https://placeholder.supabase.co' }}
+          VITE_SUPABASE_ANON_KEY: ${{ vars.VITE_SUPABASE_ANON_KEY || secrets.STAGING_SUPABASE_ANON_KEY || 'placeholder_anon_key' }}
+
+  visual-gate:
+    name: Gherkin + Playwright visual gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Install Playwright (chromium)
+        run: bunx playwright install --with-deps chromium
+
+      - name: Run visual gate
+        id: playwright
+        run: bun run test
+        continue-on-error: true   # capture result even on failure, so the dashboard-post step below still runs
+        env:
+          BASE_URL:                ${{ inputs.target-url }}
+          VITE_SUPABASE_URL:      ${{ vars.VITE_SUPABASE_URL      || secrets.STAGING_SUPABASE_URL      || 'https://placeholder.supabase.co' }}
+          VITE_SUPABASE_ANON_KEY: ${{ vars.VITE_SUPABASE_ANON_KEY || secrets.STAGING_SUPABASE_ANON_KEY || 'placeholder_anon_key' }}
+
+      - name: Upload gate evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-gate-report-${{ github.run_number }}
+          path: |
+            review/
+            review/artifacts/
+          retention-days: 14
+
+      - name: Post results to SPD dashboard
+        if: always() && vars.SPD_API_URL != ''
+        env:
+          SPD_API_TOKEN:    ${{ secrets.SPD_API_TOKEN }}
+          SPD_API_URL:      ${{ vars.SPD_API_URL }}
+          SPD_PROJECT_SLUG: ${{ vars.SPD_PROJECT_SLUG }}
+          BRANCH:           ${{ github.event.pull_request.base.ref || github.ref_name }}
+          GITHUB_RUN_ID:    ${{ github.run_id }}
+          GITHUB_RUN_URL:   ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          PLAYWRIGHT_EXIT:  ${{ steps.playwright.outcome }}
+        run: |
+          if [ -f "scripts/post-spd-results.ts" ]; then
+            bun run scripts/post-spd-results.ts || echo "⚠  SPD result post failed (non-fatal)"
+          else
+            echo "scripts/post-spd-results.ts not found — skipping SPD report"
+          fi
+
+      - name: Fail job if tests failed
+        if: steps.playwright.outcome == 'failure'
+        run: exit 1
