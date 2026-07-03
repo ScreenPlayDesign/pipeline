@@ -110,10 +110,25 @@ jobs:
 
       - name: Run visual gate
         id: playwright
-        run: bun run test
+        # BASE_URL is exported conditionally, in-shell, rather than via this
+        # step's `env:` block — GitHub Actions can't omit an env key based on
+        # a condition, and `env: BASE_URL: ${{ inputs.target-url }}` would set
+        # it to a literal empty string when the caller doesn't pass one.
+        # Empty-string and unset are NOT the same thing here: Playwright only
+        # auto-derives baseURL from its own webServer.url when BASE_URL is
+        # truly absent from the environment. An explicitly-empty BASE_URL
+        # overrides that and makes every relative page.goto('/...') fail with
+        # "Cannot navigate to invalid URL" — confirmed the hard way once this
+        # went live for a caller (web-dashboard) that intentionally leaves
+        # target-url blank so Playwright boots and points at its own local
+        # dev server instead of a deployed preview.
+        run: |
+          if [ -n "${{ inputs.target-url }}" ]; then
+            export BASE_URL="${{ inputs.target-url }}"
+          fi
+          bun run test
         continue-on-error: true   # capture result even on failure, so the dashboard-post step below still runs
         env:
-          BASE_URL:                ${{ inputs.target-url }}
           VITE_SUPABASE_URL:      ${{ vars.VITE_SUPABASE_URL      || secrets.STAGING_SUPABASE_URL      || 'https://placeholder.supabase.co' }}
           VITE_SUPABASE_ANON_KEY: ${{ vars.VITE_SUPABASE_ANON_KEY || secrets.STAGING_SUPABASE_ANON_KEY || 'placeholder_anon_key' }}
 
