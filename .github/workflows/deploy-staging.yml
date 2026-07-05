@@ -32,10 +32,6 @@ on:
         type: string
         required: true
 
-concurrency:
-  group: deploy-staging
-  cancel-in-progress: true
-
 permissions:
   contents: read
 
@@ -45,6 +41,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: staging   # tracking only — no required reviewers, unlike production
+
+    # Job-level, not workflow-level — see deploy-prod.yml's identical
+    # comment. A top-level `concurrency:` on a workflow_call-only file makes
+    # GitHub detect a self-deadlock between this reusable workflow's own run
+    # and this single job, canceling every invocation.
+    concurrency:
+      group: deploy-staging
+      cancel-in-progress: true
 
     steps:
       - uses: actions/checkout@v4

@@ -57,10 +57,6 @@ on:
         type: string
         default: ''
 
-concurrency:
-  group: deploy-prod
-  cancel-in-progress: false   # never cancel a prod deploy mid-flight
-
 permissions:
   contents: write   # for pushing the git tag
 
@@ -69,6 +65,21 @@ jobs:
     name: Deploy to Cloudflare Pages (prod)
     runs-on: ubuntu-latest
     timeout-minutes: 10
+
+    # Job-level, not workflow-level: a top-level `concurrency:` on a
+    # workflow_call-only file makes GitHub try to serialize this reusable
+    # workflow's own run against this single job's identical group, which it
+    # reads as a self-deadlock — "Canceling since a deadlock was detected for
+    # concurrency group: 'deploy-prod' between a top level workflow and
+    # 'deploy'". Every run was hitting this, going all the way back — the
+    # caller (web-dashboard's deploy-prod.yml) deliberately has no
+    # concurrency block of its own, but that alone doesn't avoid the
+    # deadlock; it's this file's top-level declaration that caused it.
+    # Scoping the group to the job instead removes the ambiguity GitHub was
+    # tripping over.
+    concurrency:
+      group: deploy-prod
+      cancel-in-progress: false   # never cancel a prod deploy mid-flight
 
     # Producer's one-click gate. Configure at:
     # GitHub → Settings → Environments → production → Required reviewers
