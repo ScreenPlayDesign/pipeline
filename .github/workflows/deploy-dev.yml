@@ -1,22 +1,26 @@
 name: Deploy → Dev preview
 
-# Canonical dev-preview deploy for every SPD project. Hosted here, not in
-# any project or in foundation-template — see ci.yml's header comment for
-# why. workflow_call-only; the calling repo's own run-deploy-dev.yml (or
-# deploy-dev.yml, for simpler leaf-consumer repos that don't themselves get
-# referenced by anyone else) declares the actual `push: branches: [dev]`
-# trigger.
+# Canonical dev-preview BUILD for every SPD project. Hosted here, not in any
+# project or in foundation-template — see ci.yml's header comment for why.
+# workflow_call-only; the calling repo's own deploy-dev.yml declares the
+# actual `push: branches: [dev]` trigger.
+#
+# ⚠️ Despite the filename, this workflow no longer touches Cloudflare at
+# all — it builds and uploads dist/ as an artifact, nothing more. The actual
+# Cloudflare Pages deploy is triggered by ScreenPlayDesign/github-app's own
+# Worker, via workflow_dispatch on that repo's own .github/workflows/relay.yml,
+# once it observes this run complete successfully (a workflow_run webhook —
+# see github-app/src/handlers.ts's triggerDeployRelay()). That's the ONLY
+# place CLOUDFLARE_API_TOKEN/CLOUDFLARE_ACCOUNT_ID live now — a client's own
+# repo, which the client has full admin control over, never holds them and
+# never runs wrangler.
 #
 # Deploys using STAGING Supabase credentials — not separate dev ones — on
 # purpose: dev and staging previews are meant to be directly comparable
 # (same backend data, different frontend code), so the dev → staging
-# standing PR (opened/merged by this repo's own webhook handler) can be
+# standing PR (opened/merged by github-app's webhook handler) can be
 # reviewed just by opening both URLs side by side, without a schema/data
 # mismatch confusing the diff.
-#
-# No smoke gate, no PR-opening logic here — that's this repo's job
-# (handlers.ts), not a workflow file's. This is a preview deploy, nothing
-# more.
 
 on:
   workflow_call:
@@ -34,8 +38,8 @@ permissions:
   contents: read
 
 jobs:
-  deploy:
-    name: Build + Deploy to Cloudflare Pages (dev)
+  build:
+    name: Build (dev)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: dev-preview   # tracking only — no required reviewers; resolves against the CALLER's own environment
@@ -56,6 +60,18 @@ jobs:
       - name: TypeScript check
         run: bun run typecheck
 
+      # No git tag for dev previews — only deploy-prod.yml cuts a real tag.
+      # Still stamps sha/time/branch so the super-admin "Deploys" panel and
+      # the build-info.json below have something real to show, instead of
+      # every dev/staging deploy looking indistinguishable from "not built".
+      - name: Compute build stamp
+        id: stamp
+        run: |
+          SHA="${GITHUB_SHA::7}"
+          ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
+          echo "iso=${ISO}" >> "$GITHUB_OUTPUT"
+
       - name: Build
         run: bun run build
         env:
@@ -63,18 +79,34 @@ jobs:
           # staging previews share one backend on purpose.
           VITE_SUPABASE_URL:      ${{ vars.VITE_SUPABASE_URL      || secrets.STAGING_SUPABASE_URL      || 'https://placeholder.supabase.co' }}
           VITE_SUPABASE_ANON_KEY: ${{ vars.VITE_SUPABASE_ANON_KEY || secrets.STAGING_SUPABASE_ANON_KEY || 'placeholder_anon_key' }}
+          VITE_BUILD_SHA:         ${{ steps.stamp.outputs.sha }}
+          VITE_BUILD_TIME:        ${{ steps.stamp.outputs.iso }}
+          VITE_BUILD_BRANCH:      ${{ github.ref_name }}
 
-      - name: Deploy to Cloudflare Pages
-        # Bypasses cloudflare/wrangler-action on purpose: that action is
-        # documented (cloudflare/wrangler-action#360) to swallow wrangler's
-        # actual error and surface only its own generic wrapper exit code —
-        # confirmed the hard way when this silently failed both before and
-        # after pinning wranglerVersion, with identical zero-information
-        # output either way. Running the CLI directly means whatever
-        # wrangler actually says (auth failure, missing project, a genuine
-        # Bun crash per oven-sh/bun#10464) prints straight into this log
-        # instead of getting lost.
-        run: bunx wrangler@4.107.0 pages deploy dist --project-name=${{ vars.CLOUDFLARE_PROJECT_NAME }} --branch=dev
-        env:
-          CLOUDFLARE_API_TOKEN:  ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      # Static, unauthenticated stamp of exactly what's running at this URL —
+      # readable from any origin (see public/_headers for the CORS grant).
+      # This is what the super-admin "Deploys" panel fetches per-environment;
+      # the nav-dropdown display only ever shows *your own current* session.
+      - name: Write build-info.json
+        run: |
+          cat > dist/build-info.json <<EOF
+          {
+            "environment": "dev",
+            "branch": "${{ github.ref_name }}",
+            "tag": null,
+            "sha": "${{ steps.stamp.outputs.sha }}",
+            "buildTime": "${{ steps.stamp.outputs.iso }}"
+          }
+          EOF
+
+      # Consumed by deploy-relay's workflow_dispatch (see this file's header
+      # comment) — github-app passes this exact name through as the
+      # artifact_name input once it sees this run succeed. Short retention:
+      # nothing needs this after the relay picks it up, normally within
+      # seconds of this job finishing.
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-dev
+          path: dist
+          retention-days: 1

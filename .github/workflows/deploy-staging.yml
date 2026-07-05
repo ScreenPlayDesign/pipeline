@@ -1,20 +1,24 @@
 name: Deploy → Staging
 
-# Canonical staging deploy for every SPD project. Hosted here — see ci.yml's
+# Canonical staging BUILD for every SPD project. Hosted here — see ci.yml's
 # header comment for why. workflow_call-only; the calling repo's own
-# run-deploy-staging.yml (or deploy-staging.yml, for leaf-consumer repos)
-# declares the actual `push: branches: [staging]` trigger.
+# deploy-staging.yml declares the actual `push: branches: [staging]` trigger.
 #
-# Two sequential phases:
-#   1. deploy — build + push to Cloudflare Pages staging
-#   2. smoke  — run @smoke tests against the live staging URL (behaviour
-#      only, --ignore-snapshots — pixel comparison is ci.yml's job)
-#
-# No third "promote" phase — this repo's own webhook handler already
-# opens/refreshes the staging → prod PR itself the instant this push lands,
-# independent of whether smoke passes. Smoke failing here doesn't block
-# that PR from existing, only from being safe to merge — a human's call
-# when reviewing (staging → prod is never auto-merged).
+# ⚠️ Despite the filename, this workflow no longer touches Cloudflare, and
+# no longer runs the smoke gate either — both moved to ScreenPlayDesign/
+# github-app's own relay.yml workflow, triggered by that repo's Worker once
+# it observes this run succeed (see deploy-dev.yml's header comment for the
+# full rationale — same one applies here). This job now does
+# exactly two things: build dist/, and upload two artifacts for the relay to
+# pick up:
+#   dist-staging     — the built app, deployed to Cloudflare Pages by the relay
+#   source-staging    — the full repo checkout (minus dist/node_modules),
+#                        so the relay can `bun install` fresh and run the
+#                        @smoke Playwright suite against the now-actually-
+#                        live URL, exactly like the old in-repo smoke job did.
+#                        Deploy and smoke can no longer run back-to-back in
+#                        THIS job, since the real deploy no longer happens
+#                        here at all.
 
 on:
   workflow_call:
@@ -24,7 +28,7 @@ on:
         type: boolean
         default: false
       staging-url:
-        description: 'Live staging URL to smoke-test against'
+        description: 'Live staging URL the relay should smoke-test against'
         type: string
         required: true
 
@@ -36,9 +40,8 @@ permissions:
   contents: read
 
 jobs:
-  # ── Phase 1: Build + deploy to Cloudflare Pages ───────────────────────────
-  deploy:
-    name: Build + Deploy to Cloudflare Pages (staging)
+  build:
+    name: Build (staging)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: staging   # tracking only — no required reviewers, unlike production
@@ -59,61 +62,58 @@ jobs:
       - name: TypeScript check
         run: bun run typecheck
 
+      # No git tag for staging — only deploy-prod.yml cuts a real tag. Still
+      # stamps sha/time/branch — see deploy-dev.yml's identical step for why.
+      - name: Compute build stamp
+        id: stamp
+        run: |
+          SHA="${GITHUB_SHA::7}"
+          ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
+          echo "iso=${ISO}" >> "$GITHUB_OUTPUT"
+
+      # Packaged BEFORE bun run build below installs dist/ and BEFORE
+      # anything writes into node_modules further — keeps this artifact to
+      # just what the relay needs to reinstall cleanly and run tests,
+      # matching what a fresh `git clone` + `bun install` would look like.
+      - name: Package source for relay's smoke test
+        run: |
+          tar --exclude='.git' --exclude='node_modules' --exclude='dist' \
+            -czf /tmp/source-staging.tar.gz .
+
       - name: Build
         run: bun run build
         env:
           VITE_SUPABASE_URL:      ${{ vars.VITE_SUPABASE_URL      || secrets.STAGING_SUPABASE_URL      || 'https://placeholder.supabase.co' }}
           VITE_SUPABASE_ANON_KEY: ${{ vars.VITE_SUPABASE_ANON_KEY || secrets.STAGING_SUPABASE_ANON_KEY || 'placeholder_anon_key' }}
+          VITE_BUILD_SHA:         ${{ steps.stamp.outputs.sha }}
+          VITE_BUILD_TIME:        ${{ steps.stamp.outputs.iso }}
+          VITE_BUILD_BRANCH:      ${{ github.ref_name }}
 
-      - name: Deploy to Cloudflare Pages
-        # Bypasses cloudflare/wrangler-action on purpose: that action is
-        # documented (cloudflare/wrangler-action#360) to swallow wrangler's
-        # actual error and surface only its own generic wrapper exit code —
-        # confirmed directly in deploy-dev.yml, where this masked a missing
-        # CLOUDFLARE_PROJECT_NAME variable behind a useless "exit code 1"
-        # for two full debugging rounds. Running the CLI directly means
-        # whatever wrangler actually says prints straight into this log.
-        run: bunx wrangler@4.107.0 pages deploy dist --project-name=${{ vars.CLOUDFLARE_PROJECT_NAME }} --branch=staging
-        env:
-          CLOUDFLARE_API_TOKEN:  ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      # Static, unauthenticated stamp — see deploy-dev.yml's identical step
+      # for why (super-admin "Deploys" panel fetches this per-environment).
+      - name: Write build-info.json
+        run: |
+          cat > dist/build-info.json <<EOF
+          {
+            "environment": "staging",
+            "branch": "${{ github.ref_name }}",
+            "tag": null,
+            "sha": "${{ steps.stamp.outputs.sha }}",
+            "buildTime": "${{ steps.stamp.outputs.iso }}"
+          }
+          EOF
 
-  # ── Phase 2: Smoke test against the live staging URL ──────────────────────
-  smoke:
-    name: Staging smoke gate
-    needs: deploy
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-
-    steps:
-      - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-
-      - name: Install dependencies
-        run: bun install
-
-      - name: Install Playwright (chromium)
-        run: bunx playwright install --with-deps chromium
-
-      # Give Cloudflare Pages ~30s to propagate the new deployment
-      - name: Wait for staging to be live
-        run: sleep 30
-
-      - name: Smoke test against live staging URL
-        run: bunx playwright test --grep @smoke --ignore-snapshots
-        env:
-          BASE_URL:               ${{ inputs.staging-url }}
-          VITE_SUPABASE_URL:      ${{ vars.VITE_SUPABASE_URL      || secrets.STAGING_SUPABASE_URL      || 'https://placeholder.supabase.co' }}
-          VITE_SUPABASE_ANON_KEY: ${{ vars.VITE_SUPABASE_ANON_KEY || secrets.STAGING_SUPABASE_ANON_KEY || 'placeholder_anon_key' }}
-
-      - name: Upload smoke report
-        if: always()
+      - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: staging-smoke-report
-          path: |
-            review/
-            review/artifacts/
-          retention-days: 7
+          name: dist-staging
+          path: dist
+          retention-days: 1
+
+      - name: Upload source artifact (for relay's smoke test)
+        uses: actions/upload-artifact@v4
+        with:
+          name: source-staging
+          path: /tmp/source-staging.tar.gz
+          retention-days: 1
