@@ -68,9 +68,10 @@ jobs:
       - name: Deploy to Cloudflare Pages
         uses: cloudflare/wrangler-action@v3
         with:
-          apiToken:  ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command:   pages deploy dist --project-name=${{ vars.CLOUDFLARE_PROJECT_NAME }} --branch=staging
+          apiToken:       ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId:      ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          wranglerVersion: '4.107.0'   # matches github-app's local pin — see README.md's "Deploy" section
+          command:        pages deploy dist --project-name=${{ vars.CLOUDFLARE_PROJECT_NAME }} --branch=staging
 
   # ── Phase 2: Smoke test against the live staging URL ──────────────────────
   smoke:
