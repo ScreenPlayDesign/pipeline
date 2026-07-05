@@ -64,10 +64,30 @@ jobs:
           VITE_SUPABASE_URL:      ${{ vars.VITE_SUPABASE_URL      || secrets.STAGING_SUPABASE_URL      || 'https://placeholder.supabase.co' }}
           VITE_SUPABASE_ANON_KEY: ${{ vars.VITE_SUPABASE_ANON_KEY || secrets.STAGING_SUPABASE_ANON_KEY || 'placeholder_anon_key' }}
 
+      - name: Debug — print environment
+        # GitHub Actions auto-masks any value that matches a secret used
+        # anywhere in this workflow (CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID
+        # below get replaced with *** in the log automatically) — safe to
+        # dump everything rather than guess which vars matter. Remove this
+        # step once the deploy step's real error is identified; it's
+        # diagnostic-only, not something to leave in permanently.
+        run: env | sort
+        env:
+          CLOUDFLARE_API_TOKEN:      ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID:     ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_PROJECT_NAME:   ${{ vars.CLOUDFLARE_PROJECT_NAME }}
+
       - name: Deploy to Cloudflare Pages
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken:       ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId:      ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          wranglerVersion: '4.107.0'   # matches github-app's local pin — see README.md's "Deploy" section
-          command:        pages deploy dist --project-name=${{ vars.CLOUDFLARE_PROJECT_NAME }} --branch=dev
+        # Bypasses cloudflare/wrangler-action on purpose: that action is
+        # documented (cloudflare/wrangler-action#360) to swallow wrangler's
+        # actual error and surface only its own generic wrapper exit code —
+        # confirmed the hard way when this silently failed both before and
+        # after pinning wranglerVersion, with identical zero-information
+        # output either way. Running the CLI directly means whatever
+        # wrangler actually says (auth failure, missing project, a genuine
+        # Bun crash per oven-sh/bun#10464) prints straight into this log
+        # instead of getting lost.
+        run: bunx wrangler@4.107.0 pages deploy dist --project-name=${{ vars.CLOUDFLARE_PROJECT_NAME }} --branch=dev
+        env:
+          CLOUDFLARE_API_TOKEN:  ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
