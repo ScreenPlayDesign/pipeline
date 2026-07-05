@@ -66,12 +66,17 @@ jobs:
           VITE_SUPABASE_ANON_KEY: ${{ vars.VITE_SUPABASE_ANON_KEY || secrets.STAGING_SUPABASE_ANON_KEY || 'placeholder_anon_key' }}
 
       - name: Deploy to Cloudflare Pages
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken:       ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId:      ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          wranglerVersion: '4.107.0'   # matches github-app's local pin — see README.md's "Deploy" section
-          command:        pages deploy dist --project-name=${{ vars.CLOUDFLARE_PROJECT_NAME }} --branch=staging
+        # Bypasses cloudflare/wrangler-action on purpose: that action is
+        # documented (cloudflare/wrangler-action#360) to swallow wrangler's
+        # actual error and surface only its own generic wrapper exit code —
+        # confirmed directly in deploy-dev.yml, where this masked a missing
+        # CLOUDFLARE_PROJECT_NAME variable behind a useless "exit code 1"
+        # for two full debugging rounds. Running the CLI directly means
+        # whatever wrangler actually says prints straight into this log.
+        run: bunx wrangler@4.107.0 pages deploy dist --project-name=${{ vars.CLOUDFLARE_PROJECT_NAME }} --branch=staging
+        env:
+          CLOUDFLARE_API_TOKEN:  ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
   # ── Phase 2: Smoke test against the live staging URL ──────────────────────
   smoke:
