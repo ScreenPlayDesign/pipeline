@@ -1,14 +1,32 @@
 name: Deploy → Production
 
-# Canonical production deploy for every SPD project. Hosted here — see
-# ci.yml's header comment for why. workflow_call-only; the calling repo's
-# own run-deploy-prod.yml (or deploy-prod.yml, for leaf-consumer repos)
-# declares the actual `push: branches: [prod]` + `workflow_dispatch`
-# triggers.
+# Canonical production RELEASE BOOKKEEPING for every SPD project. Hosted
+# here — see ci.yml's header comment for why. workflow_call-only; the
+# calling repo's own deploy-prod.yml declares the actual
+# `push: branches: [prod]` + `workflow_dispatch` triggers.
+#
+# ⚠️ Gutted 2026-07-06, filename kept for continuity: this no longer builds
+# or deploys anything. Cloudflare Pages' own native Git integration builds
+# and deploys `prod` directly now (no GitHub Actions involved in the actual
+# deploy) — see web-dashboard's DEPLOYMENT_RUNBOOK.md and scripts/
+# cf-build.sh for where the build+deploy logic (and the shared-contracts.ts
+# sync, and build-info.json stamping this workflow used to do) live now.
+# This workflow's only remaining job is what Cloudflare can't do: git
+# tagging, the CHANGELOG.md/package.json version bump, and rollback.
+# deploy-dev.yml and deploy-staging.yml (no equivalent irreplaceable logic —
+# they only ever built an artifact for spd/github-app's relay.yml, itself
+# removed the same day) were deleted outright rather than trimmed.
+#
+# Note: both this job's tag push AND its CHANGELOG/version-bump push land
+# directly on `prod`, and Cloudflare's native integration deploys on every
+# push to its production branch — so a release triggers two Cloudflare
+# builds in quick succession (the real one, then a second no-op-content
+# rebuild from the doc-only commit). Harmless, just a few wasted build
+# minutes; not worth engineering around yet.
 #
 # TWO human gates between staging and prod, deliberately both kept:
-#   1. Reviewing and approving the staging → prod PR itself (this repo's
-#      webhook handler opens/refreshes it, never auto-merges it).
+#   1. Reviewing and approving the staging → prod PR itself (spd/github-app's
+#      Worker opens/refreshes it, never auto-merges it).
 #   2. This workflow's own `environment: production` gate below — a
 #      second, separate checkpoint, redundant with #1 on purpose. Resolves
 #      against the CALLING repo's own "production" environment + its own
@@ -16,42 +34,26 @@ name: Deploy → Production
 #      that itself, this file doesn't supply one for it.
 #
 # Version scheme: date-based tags, vYYYY.MM.DD.N, computed at deploy time.
-# After a successful deploy this also writes a CHANGELOG.md entry and bumps
+# After tagging, this also writes a CHANGELOG.md entry and bumps
 # package.json's version, then pushes that documentation commit directly to
 # prod. That push needs a bypass-actor on prod's branch protection — see
 # the PR_BOT_TOKEN note below. If PR_BOT_TOKEN isn't set (falls back to
-# GITHUB_TOKEN), this step fails loudly but does NOT fail the deploy that
-# already happened above it.
+# GITHUB_TOKEN), this step fails loudly but does NOT fail the tag that
+# already landed above it.
 #
 # Rollback: history only ever moves FORWARD here — this workflow never
 # force-pushes or resets prod backward. A rollback is instead a normal new
-# deploy whose tree happens to match an old tag: pass rollback-to-tag, and
-# a "Restore rollback tree" step below overlays that old tag's files onto
-# the current prod tip as one new commit, before the usual tag/build steps
-# run on top of it as if it were any other push. "What's live" is always
-# just whatever the newest tag says, even when that tag's content is old —
-# see the "Restore rollback tree" step for the exact mechanics, and
-# github-app's back-merge legs (prod→staging→dev) for how this then flows
-# back down so staging/dev don't drift from whatever prod ends up at.
-#
-# ⚠️ Despite the filename, this workflow no longer touches Cloudflare — it
-# builds, tags, and uploads dist/ as an artifact; the actual Cloudflare
-# Pages deploy is triggered by ScreenPlayDesign/github-app's own Worker via
-# workflow_dispatch on that repo's own relay.yml, once it observes this run
-# succeed (see deploy-dev.yml's header comment for the full rationale). The
-# CHANGELOG/version-bump commit below still happens here, unchanged — it's
-# a client-repo git operation (needs PR_BOT_TOKEN, which is a client-repo
-# secret), not a Cloudflare one, and per its own existing comment it was
-# already designed to not gate on the deploy succeeding — now it just
-# follows the artifact upload instead of a real deploy step, same spirit.
+# tag whose tree happens to match an old one: pass rollback-to-tag, and a
+# "Restore rollback tree" step below overlays that old tag's files onto the
+# current prod tip as one new commit, pushed to `prod` — which Cloudflare's
+# native integration then picks up and deploys like any other push, before
+# the usual tag/changelog steps run on top of that same commit. "What's
+# live" is always just whatever the newest tag says, even when its content
+# is old.
 
 on:
   workflow_call:
     inputs:
-      sync-shared-contracts:
-        description: 'Copy supabase/functions/_shared/contracts.ts to src/types/shared-contracts.ts before building'
-        type: boolean
-        default: false
       rollback-to-tag:
         description: 'Old release tag to redeploy (e.g. v2026.07.01.1). Empty = normal deploy of the current prod tip.'
         type: string
@@ -62,7 +64,7 @@ permissions:
 
 jobs:
   deploy:
-    name: Deploy to Cloudflare Pages (prod)
+    name: Tag + release bookkeeping (prod)
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -137,65 +139,13 @@ jobs:
           echo "iso=${ISO}"  >> "$GITHUB_OUTPUT"
           echo "✓ Tagged ${TAG}"
 
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-
-      - name: Install dependencies
-        run: bun install
-
-      - name: Sync shared-contracts.ts
-        if: inputs.sync-shared-contracts
-        run: cp supabase/functions/_shared/contracts.ts src/types/shared-contracts.ts || true
-
-      - name: TypeScript check
-        run: bun run typecheck
-
-      - name: Build
-        run: bun run build
-        env:
-          VITE_SUPABASE_URL:      ${{ vars.PROD_SUPABASE_URL      || secrets.PROD_SUPABASE_URL      || 'https://placeholder.supabase.co' }}
-          VITE_SUPABASE_ANON_KEY: ${{ vars.PROD_SUPABASE_ANON_KEY || secrets.PROD_SUPABASE_ANON_KEY || 'placeholder_anon_key' }}
-          VITE_BUILD_TAG:         ${{ steps.stamp.outputs.tag }}
-          VITE_BUILD_SHA:         ${{ steps.stamp.outputs.sha }}
-          VITE_BUILD_TIME:        ${{ steps.stamp.outputs.iso }}
-          VITE_BUILD_BRANCH:      ${{ github.ref_name }}
-
-      # Static, unauthenticated stamp of exactly what's running at this URL —
-      # readable from any origin (see public/_headers for the CORS grant).
-      # This is what the super-admin "Deploys" panel fetches per-environment;
-      # the nav-dropdown display only ever shows *your own current* session's
-      # build, and only if you happen to be logged in on that exact origin.
-      - name: Write build-info.json
-        run: |
-          cat > dist/build-info.json <<EOF
-          {
-            "environment": "prod",
-            "branch": "${{ github.ref_name }}",
-            "tag": "${{ steps.stamp.outputs.tag }}",
-            "sha": "${{ steps.stamp.outputs.sha }}",
-            "buildTime": "${{ steps.stamp.outputs.iso }}"
-          }
-          EOF
-
-      # Consumed by deploy-relay's workflow_dispatch (see this file's header
-      # comment) — github-app passes this exact name through as the
-      # artifact_name input once it sees this run succeed.
-      - name: Upload build artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: dist-prod
-          path: dist
-          retention-days: 1
-
       - name: Update CHANGELOG.md + package.json version
-        # Originally gated on a real deploy succeeding above it; now follows
-        # the artifact upload instead. Same spirit as before — this is
-        # documentation, not a gate, and was never meant to block on the
-        # actual Cloudflare deploy landing (that now happens asynchronously,
-        # in deploy-relay, after this workflow finishes entirely). Don't
-        # fail the workflow over a doc-commit push that needs a one-time
-        # bypass-actor setting; fail loudly in the log instead.
+        # Runs right after tagging — this is documentation, not a gate, and
+        # was never meant to block on a real deploy landing (Cloudflare's
+        # own native integration deploys asynchronously, entirely outside
+        # this workflow now). Don't fail the workflow over a doc-commit push
+        # that needs a one-time bypass-actor setting; fail loudly in the log
+        # instead.
         run: |
           node <<'NODESCRIPT'
           const fs = require('fs')
