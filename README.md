@@ -1,9 +1,16 @@
 # spd-pipeline
 
-Canonical CI/CD reusable workflows for every ScreenPlayDesign project —
-`ci.yml`, `deploy-dev.yml`, `deploy-staging.yml`, `deploy-prod.yml`. The
-actual typecheck/build/Playwright/Cloudflare-deploy steps live here, once,
-`workflow_call`-only.
+Canonical CI/CD reusable workflows for every ScreenPlayDesign project.
+**Corrected 2026-07-06:** only two files live here now — `ci.yml` and
+`deploy-prod.yml`. `deploy-dev.yml` and `deploy-staging.yml` were deleted
+outright (they only ever built an artifact for `github-app`'s now-removed
+deploy-relay path, no other irreplaceable logic). `deploy-prod.yml` was
+gutted the same day — it no longer builds or deploys anything either.
+Cloudflare Pages' own native Git integration builds and deploys every
+environment (`dev`/`staging`/`prod`) directly now; no GitHub Actions
+workflow is involved in the actual deploy step anywhere in this pipeline.
+`ci.yml` remains the one file that still does real typecheck/build/
+Playwright work, `workflow_call`-only.
 
 **This repo is public on purpose.** GitHub's reusable-workflow `uses:`
 mechanism only allows a cross-organization reference when the source repo
@@ -42,9 +49,9 @@ jobs:
 ```
 
 `vars`, `secrets` (via `secrets: inherit`), and `github.event.*` all
-resolve against the **calling** repo's own run, not this one — a
-project's own `CLOUDFLARE_PROJECT_NAME` repo variable is what
-`deploy-prod.yml` reads even though the file lives here.
+resolve against the **calling** repo's own run, not this one.
+`deploy-prod.yml` no longer reads any Cloudflare-related variable or
+secret at all — see the Workflows table below.
 
 See `ScreenPlayDesign/foundation-template/.github/README.md` for the full
 pipeline diagram, required repo variables/secrets, and the branch
@@ -59,9 +66,15 @@ status checks).
 | File | Triggers via caller | What it does |
 |---|---|---|
 | `ci.yml` | `pull_request` on staging/prod (+ `push` on prod for some projects) | Two parallel jobs: TypeScript + build, and the Gherkin/Playwright visual gate |
-| `deploy-dev.yml` | `push` on dev | Build + deploy to Cloudflare Pages dev preview, using staging credentials |
-| `deploy-staging.yml` | `push` on staging | Build + deploy to staging, then a behavior-only smoke test against the live URL |
-| `deploy-prod.yml` | `push` on prod (+ `workflow_dispatch`) | Build + deploy to prod behind the `production` environment approval gate, tags a release, updates CHANGELOG.md |
+| `deploy-prod.yml` | `push` on prod (via the calling repo's own trigger) | **Release bookkeeping only — no build, no deploy.** Tags a release (`vYYYY.MM.DD.N`), writes a CHANGELOG.md entry, bumps `package.json`'s version, and supports rollback (`rollback-to-tag` input: overlays an old tag's tree onto current `prod` as a new commit). Two human gates remain between staging and prod on purpose: the staging→prod PR itself (opened/refreshed by `github-app`, never auto-merged), and this workflow's own `environment: production` approval gate. See the file's own header comment for the full rollback mechanics. |
+
+`deploy-dev.yml` and `deploy-staging.yml` no longer exist — deleted
+2026-07-06. They only ever built an artifact for `github-app`'s deploy-relay
+path, which was removed the same day; there was no other logic in them
+worth keeping. Cloudflare Pages' native Git integration (configured once in
+the Cloudflare dashboard, not through this repo) now builds and deploys
+`dev`/`staging`/`prod` directly on every push, with no GitHub Actions
+workflow involved.
 
 ## Versioning
 
