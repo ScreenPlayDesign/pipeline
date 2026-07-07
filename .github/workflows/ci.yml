@@ -59,6 +59,57 @@ on:
         default: ''
 
 jobs:
+  # ── Lane guard — the pipeline's structural rules, enforced as a check ──────
+  # Runs only on PRs whose BASE is staging (i.e. a lane's standing PR). Two
+  # rules from the 2026-07-07 lane model (see web-dashboard/supabase/
+  # SCHEMA_REBUILD_PROPOSAL.md, Amendment v0.9.2):
+  #
+  #   SCHEMA FREEZE   design and chore lanes must not touch
+  #                   supabase/migrations/** — migrations ride the dev lane
+  #                   only, atomically with the code that needs them.
+  #   ESCALATION FLAG when the dev lane DOES carry migrations, this job
+  #                   surfaces it (step summary + output). The visual-gate
+  #                   job independently detects the same thing and reports
+  #                   carries_migration to the dashboard, which holds the
+  #                   gate pending for the CORNERPOST even with CI green.
+  #
+  # Add "<caller-job-id> / Lane guard (schema freeze)" to the required
+  # status checks on staging's branch protection alongside the two below.
+  lane-guard:
+    name: Lane guard (schema freeze)
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    if: github.event_name == 'pull_request' && github.base_ref == 'staging'
+    outputs:
+      carries-migration: ${{ steps.diff.outputs.carries }}
+      migration-files:   ${{ steps.diff.outputs.files }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check lane diff against the schema rules
+        id: diff
+        run: |
+          LANE="${{ github.head_ref }}"
+          git fetch origin staging --quiet
+          FILES=$(git diff --name-only origin/staging...HEAD -- supabase/migrations/ | tr '\n' ' ' | sed 's/ $//')
+          echo "files=$FILES"                                    >> "$GITHUB_OUTPUT"
+          echo "carries=$([ -n "$FILES" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          if [ -n "$FILES" ]; then
+            case "$LANE" in
+              design|chore)
+                echo "❌  The $LANE lane is SCHEMA-FROZEN — migrations ride the dev lane only." | tee -a "$GITHUB_STEP_SUMMARY"
+                echo "    Offending files: $FILES" | tee -a "$GITHUB_STEP_SUMMARY"
+                exit 1 ;;
+              dev)
+                echo "⚠️  This dev lane carries schema migrations: $FILES" >> "$GITHUB_STEP_SUMMARY"
+                echo "    Its into-staging gate escalates to the cornerpost even when CI is green." >> "$GITHUB_STEP_SUMMARY" ;;
+              *)
+                echo "ℹ️  Non-lane head branch '$LANE' targeting staging — only the three lanes should PR into staging." | tee -a "$GITHUB_STEP_SUMMARY"
+                exit 1 ;;
+            esac
+          fi
+
   typecheck-build:
     name: TypeScript + Build smoke test
     runs-on: ubuntu-latest
@@ -142,16 +193,35 @@ jobs:
             review/artifacts/
           retention-days: 14
 
+      # Same migration detection as lane-guard, computed in-job (no `needs:`
+      # — lane-guard is skipped on push events, and a needs-dependency on a
+      # skipped job would skip this whole job with it).
+      - name: Detect schema migrations in this diff
+        id: schema
+        if: always() && github.event_name == 'pull_request'
+        run: |
+          git fetch origin "${{ github.base_ref }}" --quiet || true
+          FILES=$(git diff --name-only "origin/${{ github.base_ref }}"...HEAD -- supabase/migrations/ 2>/dev/null | tr '\n' ' ' | sed 's/ $//')
+          echo "files=$FILES"                                    >> "$GITHUB_OUTPUT"
+          echo "carries=$([ -n "$FILES" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      # BRANCH is the PR *head* for lane PRs (the lane name is what the
+      # gate is keyed on: record_gate_report's p_branch → from_lane), and
+      # the pushed branch otherwise. CARRIES_MIGRATION/MIGRATION_FILES feed
+      # record_gate_report's p_carries_migration/p_migration_files so a
+      # migration-carrying dev gate stays pending for the cornerpost.
       - name: Post results to SPD dashboard
         if: always() && vars.SPD_API_URL != ''
         env:
-          SPD_API_TOKEN:    ${{ secrets.SPD_API_TOKEN }}
-          SPD_API_URL:      ${{ vars.SPD_API_URL }}
-          SPD_PROJECT_SLUG: ${{ vars.SPD_PROJECT_SLUG }}
-          BRANCH:           ${{ github.event.pull_request.base.ref || github.ref_name }}
-          GITHUB_RUN_ID:    ${{ github.run_id }}
-          GITHUB_RUN_URL:   ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          PLAYWRIGHT_EXIT:  ${{ steps.playwright.outcome }}
+          SPD_API_TOKEN:     ${{ secrets.SPD_API_TOKEN }}
+          SPD_API_URL:       ${{ vars.SPD_API_URL }}
+          SPD_PROJECT_SLUG:  ${{ vars.SPD_PROJECT_SLUG }}
+          BRANCH:            ${{ github.event.pull_request.head.ref || github.ref_name }}
+          GITHUB_RUN_ID:     ${{ github.run_id }}
+          GITHUB_RUN_URL:    ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          PLAYWRIGHT_EXIT:   ${{ steps.playwright.outcome }}
+          CARRIES_MIGRATION: ${{ steps.schema.outputs.carries || 'false' }}
+          MIGRATION_FILES:   ${{ steps.schema.outputs.files }}
         run: |
           if [ -f "scripts/post-spd-results.ts" ]; then
             bun run scripts/post-spd-results.ts || echo "⚠  SPD result post failed (non-fatal)"
