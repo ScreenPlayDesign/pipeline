@@ -1,6 +1,6 @@
 name: Deploy → Production
 
-# Canonical production RELEASE BOOKKEEPING for every SPD project. Hosted
+# Canonical production rollback mechanism for every SPD project. Hosted
 # here — see ci.yml's header comment for why. workflow_call-only; the
 # calling repo's own deploy-prod.yml declares the actual
 # `push: branches: [prod]` + `workflow_dispatch` triggers.
@@ -11,62 +11,73 @@ name: Deploy → Production
 # deploy) — see web-dashboard's DEPLOYMENT_RUNBOOK.md and scripts/
 # cf-build.sh for where the build+deploy logic (and the shared-contracts.ts
 # sync, and build-info.json stamping this workflow used to do) live now.
-# This workflow's only remaining job is what Cloudflare can't do: git
-# tagging, the CHANGELOG.md/package.json version bump, and rollback.
 # deploy-dev.yml and deploy-staging.yml (no equivalent irreplaceable logic —
 # they only ever built an artifact for spd/github-app's relay.yml, itself
 # removed the same day) were deleted outright rather than trimmed.
 #
-# Note: both this job's tag push AND its CHANGELOG/version-bump push land
-# directly on `prod`, and Cloudflare's native integration deploys on every
-# push to its production branch — so a release triggers two Cloudflare
-# builds in quick succession (the real one, then a second no-op-content
-# rebuild from the doc-only commit). Harmless, just a few wasted build
-# minutes; not worth engineering around yet.
+# ⚠️ Gutted FURTHER 2026-07-06, same day: the git tag + CHANGELOG.md/
+# package.json version-bump steps that used to live here moved to
+# spd/github-app's publishRelease() (see its own comment in handlers.ts),
+# triggered on every push to `prod` rather than run from this workflow.
+# Reason: pushing that bookkeeping commit straight onto `prod` (this
+# workflow's old behavior) meant `prod` was permanently one commit ahead of
+# `staging` — staging never received the bump — so the VERY NEXT
+# staging→prod PR always opened "out of date with base branch," every
+# single release, not occasionally. It also meant every release fired two
+# Cloudflare Pages builds in quick succession, and on the free-tier's
+# 1-concurrent-build-slot limit it was the FIRST one — the one that actually
+# mattered — that ended up getting skipped/superseded in practice, worse
+# than the "harmless, a few wasted build minutes" this file's comment used
+# to assume. publishRelease() now writes the tag + bump onto a disposable
+# `release` branch instead, reset to prod's tip fresh every cycle — `prod`
+# itself never gains the extra commit. This workflow's only remaining job is
+# what publishRelease() can't safely do unattended: the human-gated rollback
+# mechanism below.
 #
-# TWO human gates between staging and prod, deliberately both kept:
+# Honest trade-off worth naming: because publishRelease() fires immediately
+# on the push webhook (the moment a merge lands), it is NOT gated by this
+# workflow's `environment: production` approval below — that gate was
+# already effectively cosmetic with respect to the actual deploy even before
+# this change (Cloudflare's native integration also deploys unconditionally
+# on push, entirely outside this workflow), so moving the tag/changelog step
+# out from behind it isn't a new regression, just newly explicit. The
+# rollback path below is the one thing left that a human deliberately
+# approving still meaningfully gates, which is why it's the one thing kept
+# here rather than also moved into the webhook path.
+#
+# TWO human gates between staging and prod, still both kept for the PR leg:
 #   1. Reviewing and approving the staging → prod PR itself (spd/github-app's
 #      Worker opens/refreshes it, never auto-merges it).
-#   2. This workflow's own `environment: production` gate below — a
-#      second, separate checkpoint, redundant with #1 on purpose. Resolves
-#      against the CALLING repo's own "production" environment + its own
-#      required reviewers — a downstream project still needs to configure
-#      that itself, this file doesn't supply one for it.
-#
-# Version scheme: date-based tags, vYYYY.MM.DD.N, computed at deploy time.
-# After tagging, this also writes a CHANGELOG.md entry and bumps
-# package.json's version, then pushes that documentation commit directly to
-# prod. That push needs a bypass-actor on prod's branch protection — see
-# the PR_BOT_TOKEN note below. If PR_BOT_TOKEN isn't set (falls back to
-# GITHUB_TOKEN), this step fails loudly but does NOT fail the tag that
-# already landed above it.
+#   2. This workflow's own `environment: production` gate below — now
+#      specifically the rollback approval, not a release-bookkeeping gate.
 #
 # Rollback: history only ever moves FORWARD here — this workflow never
 # force-pushes or resets prod backward. A rollback is instead a normal new
-# tag whose tree happens to match an old one: pass rollback-to-tag, and a
-# "Restore rollback tree" step below overlays that old tag's files onto the
-# current prod tip as one new commit, pushed to `prod` — which Cloudflare's
-# native integration then picks up and deploys like any other push, before
-# the usual tag/changelog steps run on top of that same commit. "What's
-# live" is always just whatever the newest tag says, even when its content
-# is old.
+# commit whose tree happens to match an old tag's: pass rollback-to-tag, and
+# the "Restore rollback tree" step below overlays that old tag's files onto
+# the current prod tip as one new commit, pushed to `prod` — which
+# Cloudflare's native integration then picks up and deploys like any other
+# push, and which github-app's publishRelease() tags like any other push
+# too. "What's live" is always just whatever the newest tag says, even when
+# its content is old.
 
 on:
   workflow_call:
     inputs:
       rollback-to-tag:
-        description: 'Old release tag to redeploy (e.g. v2026.07.01.1). Empty = normal deploy of the current prod tip.'
+        description: 'Old release tag to redeploy (e.g. v2026.07.01.1). Empty = no-op — there is nothing else for this workflow to do on a normal deploy anymore.'
         type: string
         default: ''
 
 permissions:
-  contents: write   # for pushing the git tag
+  contents: write   # for pushing the rollback commit
 
 jobs:
   deploy:
-    name: Tag + release bookkeeping (prod)
+    name: Rollback (prod)
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    if: inputs.rollback-to-tag != ''
 
     # Job-level, not workflow-level: a top-level `concurrency:` on a
     # workflow_call-only file makes GitHub try to serialize this reusable
@@ -81,36 +92,35 @@ jobs:
     # tripping over.
     concurrency:
       group: deploy-prod
-      cancel-in-progress: false   # never cancel a prod deploy mid-flight
+      cancel-in-progress: false   # never cancel a rollback mid-flight
 
-    # Producer's one-click gate. Configure at:
-    # GitHub → Settings → Environments → production → Required reviewers
+    # Producer's one-click gate for the rollback action specifically.
+    # Configure at: GitHub → Settings → Environments → production →
+    # Required reviewers
     environment: production
 
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0   # full history so git tag push + changelog diff work
+          fetch-depth: 0   # full history so the tag checkout + push below work
           # PR_BOT_TOKEN, not the default token — github-actions[bot] isn't
           # a selectable bypass-actor on most repos' branch protection, only
           # installed Apps and real accounts are. Falling back to
           # GITHUB_TOKEN keeps the job running even if the secret isn't set
-          # yet; it just means the pushes below fail against a protected
-          # prod branch until PR_BOT_TOKEN exists.
+          # yet; it just means the push below fails against a protected prod
+          # branch until PR_BOT_TOKEN exists.
           token: ${{ secrets.PR_BOT_TOKEN || secrets.GITHUB_TOKEN }}
 
-      # Rollback only: overlay the OLD tag's file tree onto the CURRENT prod
-      # tip as one new commit. Deliberately not `git reset`/`git checkout
-      # <tag>` as the job's ref — that would detach from prod's real tip and
-      # make the later `git push origin prod` a non-fast-forward (rejected)
-      # or require force-pushing (rewrites shared history, exactly what
-      # we're avoiding). This way prod's commit graph only ever grows
-      # forward — this commit's parent is genuinely prod's current tip, it
-      # just happens to restore old content — and the tag/build/deploy/
-      # changelog steps below run completely unmodified on top of it, same
-      # as any other push.
-      - name: Restore rollback tree (rollback-to-tag only)
-        if: inputs.rollback-to-tag != ''
+      # Overlay the OLD tag's file tree onto the CURRENT prod tip as one new
+      # commit. Deliberately not `git reset`/`git checkout <tag>` as the
+      # job's ref — that would detach from prod's real tip and make the
+      # later `git push origin prod` a non-fast-forward (rejected) or
+      # require force-pushing (rewrites shared history, exactly what we're
+      # avoiding). This way prod's commit graph only ever grows forward —
+      # this commit's parent is genuinely prod's current tip, it just
+      # happens to restore old content — and Cloudflare's deploy + github-
+      # app's publishRelease() both react to it exactly like any other push.
+      - name: Restore rollback tree
         run: |
           git fetch --tags --quiet
           git checkout "${{ inputs.rollback-to-tag }}" -- .
@@ -120,77 +130,3 @@ jobs:
           git commit -m "revert: roll back prod tree to ${{ inputs.rollback-to-tag }}" --allow-empty
           git push origin HEAD:prod
           echo "✓ prod tree restored to ${{ inputs.rollback-to-tag }} as a new forward commit"
-
-      - name: Create and push git tag
-        id: stamp
-        run: |
-          DATE="$(date -u +%Y.%m.%d)"
-          git fetch --tags --quiet
-          N=$(( $(git tag -l "v${DATE}.*" | wc -l | tr -d ' ') + 1 ))
-          TAG="v${DATE}.${N}"
-          SHA="${GITHUB_SHA::7}"
-          ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag "$TAG" -m "Deploy ${TAG} · ${SHA} · ${ISO}"
-          git push origin "$TAG"
-          echo "tag=${TAG}"  >> "$GITHUB_OUTPUT"
-          echo "sha=${SHA}"  >> "$GITHUB_OUTPUT"
-          echo "iso=${ISO}"  >> "$GITHUB_OUTPUT"
-          echo "✓ Tagged ${TAG}"
-
-      - name: Update CHANGELOG.md + package.json version
-        # Runs right after tagging — this is documentation, not a gate, and
-        # was never meant to block on a real deploy landing (Cloudflare's
-        # own native integration deploys asynchronously, entirely outside
-        # this workflow now). Don't fail the workflow over a doc-commit push
-        # that needs a one-time bypass-actor setting; fail loudly in the log
-        # instead.
-        run: |
-          node <<'NODESCRIPT'
-          const fs = require('fs')
-          const { execSync } = require('child_process')
-
-          const tag     = process.env.TAG
-          const version = tag.replace(/^v/, '')
-          const when    = new Date().toISOString().replace('T', ' ').slice(0, 16) + ' UTC'
-
-          let prevTag = ''
-          try {
-            prevTag = execSync('git describe --tags --abbrev=0 HEAD^', { encoding: 'utf8' }).trim()
-          } catch { /* first-ever tag — no previous one to diff against */ }
-
-          const logCmd = prevTag
-            ? `git log ${prevTag}..HEAD --pretty=format:"- %s (%h)" --no-merges`
-            : `git log --pretty=format:"- %s (%h)" --no-merges -20`
-          const commits = execSync(logCmd, { encoding: 'utf8' }).trim() || '- (no commits found)'
-
-          const entry  = `## ${tag} — ${when}\n\n${commits}\n`
-          const marker = '<!-- New entries are inserted directly below this line by deploy-prod.yml -->'
-          const changelog = fs.readFileSync('CHANGELOG.md', 'utf8')
-          if (!changelog.includes(marker)) throw new Error('CHANGELOG.md marker comment not found — check it wasn\'t edited away')
-          fs.writeFileSync('CHANGELOG.md', changelog.replace(marker, `${marker}\n\n${entry}`))
-
-          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'))
-          pkg.version = version
-          fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n')
-
-          console.log(`✓ CHANGELOG.md + package.json updated for ${tag}`)
-          NODESCRIPT
-
-          git add CHANGELOG.md package.json
-          git commit -m "docs: release ${TAG} [skip ci]"
-
-          if git push origin prod; then
-            echo "✓ Release documentation committed to prod"
-          else
-            echo "⚠  Could not push the CHANGELOG/version commit to prod."
-            echo "   1. Repo secret PR_BOT_TOKEN must be a fine-grained PAT"
-            echo "      (Contents: Read and write, scoped to this repo)."
-            echo "   2. That PAT's owning account must be on prod's bypass list:"
-            echo "      Settings → Branches → prod → Allow specified actors to"
-            echo "      bypass required pull requests → add your account."
-            echo "   The deploy above already succeeded — only this doc commit is stuck."
-          fi
-        env:
-          TAG: ${{ steps.stamp.outputs.tag }}

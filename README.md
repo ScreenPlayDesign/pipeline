@@ -12,6 +12,19 @@ workflow is involved in the actual deploy step anywhere in this pipeline.
 `ci.yml` remains the one file that still does real typecheck/build/
 Playwright work, `workflow_call`-only.
 
+**Gutted FURTHER, same day:** `deploy-prod.yml` also no longer tags releases
+or bumps `CHANGELOG.md`/`package.json` — that moved to `ScreenPlayDesign/
+github-app`'s `publishRelease()`, triggered directly off the `push` webhook
+the instant a merge lands on `prod`, rather than run from this workflow.
+Reason: the old version pushed that bookkeeping commit straight onto `prod`,
+which meant `prod` was permanently one commit ahead of `staging` — so the
+very next staging→prod PR always opened "out of date with base branch,"
+every release, not occasionally. `deploy-prod.yml` now exists solely for the
+human-gated rollback mechanism (`rollback-to-tag`) — see its own header
+comment for the full reasoning and the honest trade-off it creates (the
+`environment: production` approval gate no longer gates anything on a normal
+release, only on a rollback).
+
 **This repo is public on purpose.** GitHub's reusable-workflow `uses:`
 mechanism only allows a cross-organization reference when the source repo
 is public — a private repo's reusable workflows can only be called by
@@ -66,7 +79,7 @@ status checks).
 | File | Triggers via caller | What it does |
 |---|---|---|
 | `ci.yml` | `pull_request` on staging/prod (+ `push` on prod for some projects) | Two parallel jobs: TypeScript + build, and the Gherkin/Playwright visual gate |
-| `deploy-prod.yml` | `push` on prod (via the calling repo's own trigger) | **Release bookkeeping only — no build, no deploy.** Tags a release (`vYYYY.MM.DD.N`), writes a CHANGELOG.md entry, bumps `package.json`'s version, and supports rollback (`rollback-to-tag` input: overlays an old tag's tree onto current `prod` as a new commit). Two human gates remain between staging and prod on purpose: the staging→prod PR itself (opened/refreshed by `github-app`, never auto-merged), and this workflow's own `environment: production` approval gate. See the file's own header comment for the full rollback mechanics. |
+| `deploy-prod.yml` | `workflow_dispatch` with `rollback-to-tag` (a normal push does nothing here anymore) | **Rollback only.** Overlays an old release tag's file tree onto the current `prod` tip as a new forward commit (never force-pushes or resets history). Gated behind this workflow's `environment: production` approval — the one remaining thing that gate meaningfully blocks, now that release tagging/CHANGELOG happens automatically via `github-app`'s `publishRelease()` instead (see that repo's `handlers.ts`). See the file's own header comment for the full mechanics and the trade-off this split creates. |
 
 `deploy-dev.yml` and `deploy-staging.yml` no longer exist — deleted
 2026-07-06. They only ever built an artifact for `github-app`'s deploy-relay
