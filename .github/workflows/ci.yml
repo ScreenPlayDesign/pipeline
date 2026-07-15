@@ -180,6 +180,7 @@ jobs:
           bun run test
         continue-on-error: true   # capture result even on failure, so the dashboard-post step below still runs
         env:
+          SPD_ALLOW_HOST_DEV:     '1'
           VITE_SUPABASE_URL:      ${{ vars.VITE_SUPABASE_URL      || secrets.STAGING_SUPABASE_URL      || 'https://placeholder.supabase.co' }}
           VITE_SUPABASE_ANON_KEY: ${{ vars.VITE_SUPABASE_ANON_KEY || secrets.STAGING_SUPABASE_ANON_KEY || 'placeholder_anon_key' }}
 
