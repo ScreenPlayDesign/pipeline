@@ -33,9 +33,23 @@ name: ci
 # workflow run is actually calling this — the CALLER's own variables and
 # secrets, not this repo's — so one shared file serves every project's own
 # config without `inputs:` plumbing for values that already sit in the
-# caller's repo settings. Falls back across two naming conventions
-# (VITE_SUPABASE_URL as a var, or the older STAGING_SUPABASE_URL as a
-# secret) so existing projects don't need a rename before this works.
+# caller's repo settings.
+#
+# 2026-07-17: standardized on secrets.STAGING_SUPABASE_URL/
+# STAGING_SUPABASE_PUBLISHABLE_KEY as the one source for this — dropped
+# the earlier vars.VITE_SUPABASE_URL fallback. Two reasons: (1) a bare
+# VITE_SUPABASE_URL variable/secret name reads as ambiguous on a repo's
+# Settings page — nothing about the name says "this is staging," which
+# matters once you're used to scanning for STAGING_*/PROD_* pairs
+# elsewhere on that same page. (2) every calling repo already had
+# STAGING_SUPABASE_URL/STAGING_SUPABASE_ANON_KEY sitting there as
+# secrets from the original Supabase migration-deploy setup (supabase-
+# staging.yml), so this reuses existing values instead of asking every
+# project to create yet another differently-named copy of the same
+# staging credential. Secrets rather than Variables here on purpose too
+# — matches what was already in place, even though the anon/publishable
+# key itself isn't actually sensitive (RLS is the real access boundary,
+# not key secrecy — it ships in the public JS bundle regardless).
 #
 # Two parallel jobs, not one combined job — typecheck/build and the
 # Playwright visual gate run concurrently. The check names a repo's branch
@@ -139,8 +153,8 @@ jobs:
       - name: Build smoke test
         run: bun run build
         env:
-          VITE_SUPABASE_URL:      ${{ vars.VITE_SUPABASE_URL      || secrets.STAGING_SUPABASE_URL      || 'https://placeholder.supabase.co' }}
-          VITE_SUPABASE_PUBLISHABLE_KEY: ${{ vars.VITE_SUPABASE_PUBLISHABLE_KEY || secrets.STAGING_SUPABASE_ANON_KEY || 'placeholder_anon_key' }}
+          VITE_SUPABASE_URL:      ${{ secrets.STAGING_SUPABASE_URL             || 'https://placeholder.supabase.co' }}
+          VITE_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.STAGING_SUPABASE_PUBLISHABLE_KEY || 'placeholder_anon_key' }}
 
   visual-gate:
     name: Gherkin + Playwright visual gate
@@ -181,8 +195,8 @@ jobs:
         continue-on-error: true   # capture result even on failure, so the dashboard-post step below still runs
         env:
           SPD_ALLOW_HOST_DEV:     '1'
-          VITE_SUPABASE_URL:      ${{ vars.VITE_SUPABASE_URL      || secrets.STAGING_SUPABASE_URL      || 'https://placeholder.supabase.co' }}
-          VITE_SUPABASE_PUBLISHABLE_KEY: ${{ vars.VITE_SUPABASE_PUBLISHABLE_KEY || secrets.STAGING_SUPABASE_ANON_KEY || 'placeholder_anon_key' }}
+          VITE_SUPABASE_URL:      ${{ secrets.STAGING_SUPABASE_URL             || 'https://placeholder.supabase.co' }}
+          VITE_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.STAGING_SUPABASE_PUBLISHABLE_KEY || 'placeholder_anon_key' }}
 
       - name: Upload gate evidence
         if: always()
