@@ -140,7 +140,7 @@ jobs:
         run: bun run build
         env:
           VITE_SUPABASE_URL:      ${{ vars.VITE_SUPABASE_URL      || secrets.STAGING_SUPABASE_URL      || 'https://placeholder.supabase.co' }}
-          VITE_SUPABASE_ANON_KEY: ${{ vars.VITE_SUPABASE_ANON_KEY || secrets.STAGING_SUPABASE_ANON_KEY || 'placeholder_anon_key' }}
+          VITE_SUPABASE_PUBLISHABLE_KEY: ${{ vars.VITE_SUPABASE_PUBLISHABLE_KEY || secrets.STAGING_SUPABASE_ANON_KEY || 'placeholder_anon_key' }}
 
   visual-gate:
     name: Gherkin + Playwright visual gate
@@ -182,7 +182,7 @@ jobs:
         env:
           SPD_ALLOW_HOST_DEV:     '1'
           VITE_SUPABASE_URL:      ${{ vars.VITE_SUPABASE_URL      || secrets.STAGING_SUPABASE_URL      || 'https://placeholder.supabase.co' }}
-          VITE_SUPABASE_ANON_KEY: ${{ vars.VITE_SUPABASE_ANON_KEY || secrets.STAGING_SUPABASE_ANON_KEY || 'placeholder_anon_key' }}
+          VITE_SUPABASE_PUBLISHABLE_KEY: ${{ vars.VITE_SUPABASE_PUBLISHABLE_KEY || secrets.STAGING_SUPABASE_ANON_KEY || 'placeholder_anon_key' }}
 
       - name: Upload gate evidence
         if: always()
