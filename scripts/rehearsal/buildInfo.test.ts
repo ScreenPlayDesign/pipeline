@@ -47,3 +47,35 @@ describe('waitForBuild', () => {
     if (!r.ok) expect(r.reason).toContain('build-info.json')
   })
 })
+
+describe('waitForBuild request hygiene', () => {
+  const clock = () => { let t = 0; return { now: () => t, sleep: async (ms: number) => { t += ms } } }
+
+  test('a request that never answers is aborted, and the wait still ends', async () => {
+    const c = clock()
+    const fetchFn = ((_url: string, init?: RequestInit) => new Promise((_, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(new Error('The operation timed out.')))
+    })) as unknown as typeof fetch
+    const r = await waitForBuild('https://staging.x.pages.dev', FULL, {
+      fetchFn, ...c, timeoutMs: 60_000, intervalMs: 15_000, requestTimeoutMs: 20,
+    })
+    expect(r.ok).toBe(false)
+    if (!r.ok) expect(r.reason).toContain('build-info.json')
+  })
+
+  test('a 200 with a null body is not valid build info and is not called unreachable', async () => {
+    const c = clock()
+    const fetchFn = (async () => new Response('null', { status: 200 })) as unknown as typeof fetch
+    const r = await waitForBuild('https://staging.x.pages.dev', FULL, { fetchFn, ...c, timeoutMs: 30_000 })
+    expect(r.ok).toBe(false)
+    if (!r.ok) expect(r.reason).not.toContain('unreachable')
+  })
+
+  test('a 200 with a non-JSON body says it is not valid JSON', async () => {
+    const c = clock()
+    const fetchFn = (async () => new Response('<html>oops</html>', { status: 200 })) as unknown as typeof fetch
+    const r = await waitForBuild('https://staging.x.pages.dev', FULL, { fetchFn, ...c, timeoutMs: 30_000 })
+    expect(r.ok).toBe(false)
+    if (!r.ok) expect(r.reason).toContain('not valid JSON')
+  })
+})

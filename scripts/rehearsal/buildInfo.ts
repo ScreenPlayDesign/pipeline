@@ -11,12 +11,13 @@ export async function waitForBuild(
   siteUrl: string,
   sha: string,
   opts: {
-    timeoutMs?: number; intervalMs?: number; fetchFn?: typeof fetch
+    timeoutMs?: number; intervalMs?: number; requestTimeoutMs?: number; fetchFn?: typeof fetch
     sleep?: (ms: number) => Promise<void>; now?: () => number
   } = {},
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
   const timeoutMs = opts.timeoutMs ?? 15 * 60_000
   const intervalMs = opts.intervalMs ?? 15_000
+  const requestTimeoutMs = opts.requestTimeoutMs ?? 10_000
   const fetchFn = opts.fetchFn ?? fetch
   const sleep = opts.sleep ?? ((ms: number) => new Promise(r => setTimeout(r, ms)))
   const now = opts.now ?? Date.now
@@ -25,12 +26,18 @@ export async function waitForBuild(
   let last = 'nothing yet'
   for (;;) {
     try {
-      const res = await fetchFn(`${url}?t=${now()}`, { headers: { 'cache-control': 'no-cache' } })
+      const res = await fetchFn(`${url}?t=${now()}`, {
+        headers: { 'cache-control': 'no-cache' },
+        signal: AbortSignal.timeout(requestTimeoutMs),
+      })
       if (!res.ok) last = `build-info.json answered ${res.status}`
       else {
-        const info = await res.json()
-        if (servesCommit(info, sha)) return { ok: true }
-        last = `staging serves ${String((info as { sha?: unknown }).sha ?? 'no sha')}`
+        let info: unknown
+        let parsed = true
+        try { info = await res.json() } catch { parsed = false }
+        if (!parsed) last = 'build-info.json is not valid JSON'
+        else if (servesCommit(info, sha)) return { ok: true }
+        else last = `staging serves ${String((info as { sha?: unknown } | null)?.sha ?? 'no sha')}`
       }
     } catch (e) {
       last = `build-info.json unreachable (${(e as Error).message})`
