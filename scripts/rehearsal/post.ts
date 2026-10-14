@@ -81,8 +81,9 @@ export async function postRehearsal(
 ): Promise<{ verdict: 'passed' | 'failed' | 'error'; description: string }> {
   const root = deps.cwd ?? projectRoot(env)
   const fetchFn = deps.fetchFn ?? fetch
-  const token = env.SPD_REHEARSAL_TOKEN ?? env.SPD_API_TOKEN, apiUrl = env.SPD_API_URL?.replace(/\/$/, ''), slug = env.SPD_PROJECT_SLUG
+  const token = env.SPD_REHEARSAL_TOKEN || env.SPD_API_TOKEN, apiUrl = env.SPD_API_URL?.replace(/\/$/, ''), slug = env.SPD_PROJECT_SLUG
   const sha = env.GITHUB_SHA ?? '', runKey = env.GITHUB_RUN_ID ?? new Date().toISOString().replace(/[:.]/g, '-')
+  const evidenceRoots = [join(root, 'review'), join(root, 'screenplay')]
   const resultsFile = join(root, 'review', 'results.json')
   const walkDir = join(root, 'review', 'walkthroughs')
 
@@ -93,7 +94,11 @@ export async function postRehearsal(
   // read (any results.json is stale) and the run is posted as an error.
   const neverServed = env.WAITED === 'failure'
   let report: PlaywrightReport | null = null
-  try { if (!neverServed && existsSync(resultsFile)) report = JSON.parse(readFileSync(resultsFile, 'utf8')) } catch {
+  try { if (!neverServed && existsSync(resultsFile)) {
+      if (!insideAny(evidenceRoots, resultsFile)) throw new Error('refused: results.json is not a regular file under review/')
+      report = JSON.parse(readFileSync(resultsFile, 'utf8'))
+    }
+  } catch {
     console.warn(`  ${resultsFile} could not be parsed — treating the rehearsal as having no report`)
     report = null
   }
@@ -136,7 +141,7 @@ export async function postRehearsal(
 
   async function upload(localPath: string, remotePath: string, key = runKey): Promise<string | null> {
     if (!localPath || !existsSync(localPath)) return null
-    if (!insideAny([join(root, 'review'), join(root, 'screenplay')], localPath)) {
+    if (!insideAny(evidenceRoots, localPath)) {
       console.warn(`  refused evidence outside review/ or screenplay/: ${remotePath}`)
       return null
     }
@@ -194,7 +199,7 @@ export async function postRehearsal(
     const frames: FrameRow[] = []
     let steps: StepRow[] = []
     const manifestPath = join(walkDir, sSlug, 'walkthrough.json')
-    if ((status === 'passed' || status === 'failed') && existsSync(manifestPath)) {
+    if ((status === 'passed' || status === 'failed') && existsSync(manifestPath) && insideAny(evidenceRoots, manifestPath)) {
       try {
         const m = JSON.parse(readFileSync(manifestPath, 'utf8')) as WalkthroughManifest
         steps = m.steps.map(s => ({
@@ -215,7 +220,7 @@ export async function postRehearsal(
             step_status: step.status, actor_id: fr.actor_id, actor_name: actor?.name ?? fr.actor_id,
             actor_role: actor?.role ?? null, actor_device: actor?.device ?? null,
             is_focus: step.focus_actor_id === fr.actor_id, frame_url: url,
-            content_hash: (() => { try { if (!insideAny([join(root, 'review')], local)) return null; return createHash('sha256').update(readFileSync(local)).digest('hex') } catch { return null } })(),
+            content_hash: (() => { try { return createHash('sha256').update(readFileSync(local)).digest('hex') } catch { return null } })(),
             page_url: fr.url ?? null, width: fr.width, height: fr.height, captured_at: fr.captured_at ?? null,
           })
         }

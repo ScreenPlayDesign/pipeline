@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from 'bun:test'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { notPerformedRow, postRehearsal, runPayload } from './post.ts'
@@ -213,4 +213,55 @@ test('a walkthrough frame pointing outside review/ is not uploaded, and the run 
   expect(calls.some(c => c.url.endsWith('/upload') && String(c.body.path).includes('outside.png'))).toBe(false)
   const body = calls.find(c => c.url.endsWith('/test-report'))!.body
   expect(body.scenarios[0].frames).toEqual([])
+})
+
+test('an empty SPD_REHEARSAL_TOKEN falls back to SPD_API_TOKEN', async () => {
+  const seen: string[] = []
+  const fetchFn = (async (_u: string, init?: RequestInit) => {
+    seen.push((init?.headers as Record<string, string>).Authorization); return ok()
+  }) as unknown as typeof fetch
+  await postRehearsal({ ...env, SPD_API_TOKEN: 'api-tok', SPD_REHEARSAL_TOKEN: '' }, { fetchFn, cwd: project() })
+  expect(seen.length).toBeGreaterThan(0)
+  expect(new Set(seen)).toEqual(new Set(['Bearer api-tok']))
+})
+
+test('the rehearsal token wins when both tokens are set', async () => {
+  const seen: string[] = []
+  const fetchFn = (async (_u: string, init?: RequestInit) => {
+    seen.push((init?.headers as Record<string, string>).Authorization); return ok()
+  }) as unknown as typeof fetch
+  await postRehearsal({ ...env, SPD_API_TOKEN: 'api-tok', SPD_REHEARSAL_TOKEN: 'reh-tok' }, { fetchFn, cwd: project() })
+  expect(new Set(seen)).toEqual(new Set(['Bearer reh-tok']))
+})
+
+function reportWith(attachments: unknown[]) {
+  return JSON.stringify({
+    stats: { expected: 1, unexpected: 0, skipped: 0 },
+    suites: [{ title: 'a.spec.ts', file: 'a.spec.ts', specs: [{
+      title: 'Kira shares', ok: true,
+      tests: [{ annotations: [], results: [{ status: 'passed', duration: 5, attachments }] }],
+    }] }],
+  })
+}
+
+test('a Playwright attachment outside review/ is not uploaded', async () => {
+  const root = project()
+  writeFileSync(join(root, 'outside.png'), 'secret')
+  writeFileSync(join(root, 'review', 'results.json'),
+    reportWith([{ name: 'screenshot', path: join(root, 'outside.png'), contentType: 'image/png' }]))
+  const { calls, fetchFn } = stub(ok)
+  const r = await postRehearsal(env, { fetchFn, cwd: root })
+  expect(r.verdict).toBe('passed')
+  expect(calls.some(c => c.url.endsWith('/upload'))).toBe(false)
+  expect(calls.find(c => c.url.endsWith('/test-report'))!.body.scenarios[0].screenshot_url).toBeNull()
+})
+
+test('a results.json that is a symlink to a file outside review/ is treated as no report', async () => {
+  const root = project()
+  writeFileSync(join(root, 'real.json'), reportWith([]))
+  rmSync(join(root, 'review', 'results.json'))
+  symlinkSync(join(root, 'real.json'), join(root, 'review', 'results.json'))
+  const { fetchFn } = stub(ok)
+  const r = await postRehearsal(env, { fetchFn, cwd: root })
+  expect(r.verdict).toBe('error')
 })
