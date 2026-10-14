@@ -93,8 +93,11 @@ export async function postRehearsal(
   // Staging never served this commit: nothing was performed, so no report is
   // read (any results.json is stale) and the run is posted as an error.
   const neverServed = env.WAITED !== undefined && env.WAITED !== 'success'
+  // Staging was served but Playwright never reported an outcome (the perform
+  // job did not reach it): likewise nothing this run produced can be trusted.
+  const notPerformed = !neverServed && env.WAITED === 'success' && !env.PLAYWRIGHT_OUTCOME
   let report: PlaywrightReport | null = null
-  try { if (!neverServed && existsSync(resultsFile)) {
+  try { if (!neverServed && !notPerformed && existsSync(resultsFile)) {
       if (!insideAny(evidenceRoots, resultsFile)) throw new Error('refused: results.json is not a regular file under review/')
       report = JSON.parse(readFileSync(resultsFile, 'utf8'))
     }
@@ -123,7 +126,7 @@ export async function postRehearsal(
     description = 'Playwright exited with an error but recorded no failing scene — see the run log'
   }
   // Playwright skipped or cancelled: whatever results.json exists is not this run's.
-  if (env.PLAYWRIGHT_OUTCOME && env.PLAYWRIGHT_OUTCOME !== 'success' && env.PLAYWRIGHT_OUTCOME !== 'failure') {
+  if (notPerformed || (env.PLAYWRIGHT_OUTCOME && env.PLAYWRIGHT_OUTCOME !== 'success' && env.PLAYWRIGHT_OUTCOME !== 'failure')) {
     verdict = null; outcomes = []; tests = []
     description = 'Playwright did not run — see the run log'
   }

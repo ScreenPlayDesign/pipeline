@@ -187,6 +187,16 @@ for (const waited of ['failure', 'cancelled']) {
   })
 }
 
+for (const outcome of [undefined, '']) {
+  test(`waited success with Playwright outcome ${JSON.stringify(outcome)} posts an error without reading any report`, async () => {
+    const { calls, fetchFn } = stub(ok)
+    const r = await postRehearsal({ ...env, WAITED: 'success', PLAYWRIGHT_OUTCOME: outcome }, { fetchFn, cwd: project() })
+    expect(r).toEqual({ verdict: 'error', description: 'Playwright did not run — see the run log' })
+    const body = calls.find(c => c.url.endsWith('/test-report'))!.body
+    expect(body).toMatchObject({ status: 'failed', verdict: 'error', scenarios: [] })
+  })
+}
+
 for (const outcome of ['skipped', 'cancelled']) {
   test(`Playwright ${outcome} is an error even when an old results.json is present`, async () => {
     const { calls, fetchFn } = stub(ok)
