@@ -34,6 +34,7 @@ test('the run payload carries the verdict and counts as a dress rehearsal on sta
     project_slug: 'fastnacht-lancaster', branch: 'staging', commit_sha: 'a'.repeat(40), status: 'passed',
     kind: 'dress_rehearsal', verdict: 'passed', required_total: 1, required_passed: 1, not_performed: 0, later_total: 2,
     triggered_by: 'dress-rehearsal', report_url: 'https://github.com/x/actions/runs/1',
+    total_tests: 0, passed_tests: 0, failed_tests: 0,
   })
 })
 
@@ -163,3 +164,33 @@ test('a failing @later scene makes Playwright exit non-zero but does not block t
   const body = calls.find(c => c.url.endsWith('/test-report'))!.body
   expect(body).toMatchObject({ status: 'passed', verdict: 'passed', later_total: 1 })
 })
+
+test('passed and failed counts cover only required scenes, so a failing @later scene is not shown as a failure', () => {
+  const row = (status: 'passed' | 'failed', required: boolean) => ({ ...notPerformedRow(outcome, 0), status, required })
+  const p = runPayload({
+    slug: 's', sha: 'a'.repeat(40), description: '1/1 required scenes passed',
+    verdict: { verdict: 'passed', requiredTotal: 1, requiredPassed: 1, failed: 0, notPerformed: 0, skipped: 0, laterTotal: 2 },
+    scenarios: [row('passed', true), row('failed', false), row('passed', false)],
+    runUrl: null, runKey: 'k', baseUrl: 'u',
+  })
+  expect(p).toMatchObject({ total_tests: 3, passed_tests: 1, failed_tests: 0 })
+})
+
+test('staging never serving the commit posts the run as error with the reason, without reading any report', async () => {
+  const { calls, fetchFn } = stub(ok)
+  const r = await postRehearsal({ ...env, WAITED: 'failure', PLAYWRIGHT_OUTCOME: 'skipped' }, { fetchFn, cwd: project() })
+  expect(r).toEqual({ verdict: 'error', description: 'Staging never served this commit within 15 minutes' })
+  const body = calls.find(c => c.url.endsWith('/test-report'))!.body
+  expect(body).toMatchObject({ status: 'failed', verdict: 'error', scenarios: [],
+    metadata: { summary: 'Staging never served this commit within 15 minutes' } })
+})
+
+for (const outcome of ['skipped', 'cancelled']) {
+  test(`Playwright ${outcome} is an error even when an old results.json is present`, async () => {
+    const { calls, fetchFn } = stub(ok)
+    const r = await postRehearsal({ ...env, PLAYWRIGHT_OUTCOME: outcome }, { fetchFn, cwd: project() })
+    expect(r).toEqual({ verdict: 'error', description: 'Playwright did not run — see the run log' })
+    const body = calls.find(c => c.url.endsWith('/test-report'))!.body
+    expect(body).toMatchObject({ status: 'failed', verdict: 'error' })
+  })
+}

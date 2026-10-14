@@ -65,8 +65,8 @@ export function runPayload(a: {
     required_total: v?.requiredTotal ?? null, required_passed: v?.requiredPassed ?? null,
     not_performed: v?.notPerformed ?? null, later_total: v?.laterTotal ?? null,
     total_tests: a.scenarios.length,
-    passed_tests: a.scenarios.filter(s => s.status === 'passed').length,
-    failed_tests: a.scenarios.filter(s => s.status === 'failed').length,
+    passed_tests: a.scenarios.filter(s => s.required && s.status === 'passed').length,
+    failed_tests: a.scenarios.filter(s => s.required && s.status === 'failed').length,
     triggered_by: 'dress-rehearsal', runner_name: 'github-actions', report_url: a.runUrl,
     metadata: { run_key: a.runKey, base_url: a.baseUrl, summary: a.description },
     scenarios: a.scenarios,
@@ -87,8 +87,11 @@ export async function postRehearsal(
   const entries = collectCastEntries(join(root, 'screenplay'))
   const inventory = inventoryFrom(entries)
 
+  // Staging never served this commit: nothing was performed, so no report is
+  // read (any results.json is stale) and the run is posted as an error.
+  const neverServed = env.WAITED === 'failure'
   let report: PlaywrightReport | null = null
-  try { if (existsSync(resultsFile)) report = JSON.parse(readFileSync(resultsFile, 'utf8')) } catch {
+  try { if (!neverServed && existsSync(resultsFile)) report = JSON.parse(readFileSync(resultsFile, 'utf8')) } catch {
     console.warn(`  ${resultsFile} could not be parsed — treating the rehearsal as having no report`)
     report = null
   }
@@ -111,6 +114,15 @@ export async function postRehearsal(
   if (env.PLAYWRIGHT_OUTCOME === 'failure' && report && (report.stats?.unexpected ?? 0) === 0) {
     verdict = null
     description = 'Playwright exited with an error but recorded no failing scene — see the run log'
+  }
+  // Playwright skipped or cancelled: whatever results.json exists is not this run's.
+  if (env.PLAYWRIGHT_OUTCOME && env.PLAYWRIGHT_OUTCOME !== 'success' && env.PLAYWRIGHT_OUTCOME !== 'failure') {
+    verdict = null; outcomes = []; tests = []
+    description = 'Playwright did not run — see the run log'
+  }
+  if (neverServed) {
+    verdict = null; outcomes = []; tests = []
+    description = 'Staging never served this commit within 15 minutes'
   }
   const result = { verdict: (verdict?.verdict ?? 'error') as 'passed' | 'failed' | 'error', description }
 
