@@ -37,15 +37,19 @@ const MIME: Record<string, string> = {
   '.webm': 'video/webm', '.mp4': 'video/mp4', '.svg': 'image/svg+xml',
 }
 
+function skippedSteps(o: ScenarioOutcome): StepRow[] {
+  return o.scenario.steps.map((s, i) => ({
+    index: i + 1, keyword: s.keyword, text: s.text, status: 'skipped', error: null, duration_ms: null, focus_actor: null,
+  }))
+}
+
 export function notPerformedRow(o: ScenarioOutcome, sortOrder: number): ScenarioRow {
   return {
     feature_file: o.scenario.featureFile, scenario_name: o.scenario.name, scenario_tags: o.scenario.tags,
     status: 'not_performed', required: o.scenario.required, duration_ms: null,
     error_message: 'This scene has no test yet',
     screenshot_url: null, video_url: null, diff_url: null, sort_order: sortOrder, frames: [],
-    steps: o.scenario.steps.map((s, i) => ({
-      index: i + 1, keyword: s.keyword, text: s.text, status: 'skipped', error: null, duration_ms: null, focus_actor: null,
-    })),
+    steps: skippedSteps(o),
   }
 }
 
@@ -69,8 +73,12 @@ export function runPayload(a: {
   }
 }
 
-export async function postRehearsal(env: NodeJS.ProcessEnv = process.env): Promise<{ verdict: 'passed' | 'failed' | 'error'; description: string }> {
-  const root = process.cwd()
+export async function postRehearsal(
+  env: NodeJS.ProcessEnv = process.env,
+  deps: { fetchFn?: typeof fetch; cwd?: string } = {},
+): Promise<{ verdict: 'passed' | 'failed' | 'error'; description: string }> {
+  const root = deps.cwd ?? process.cwd()
+  const fetchFn = deps.fetchFn ?? fetch
   const token = env.SPD_API_TOKEN, apiUrl = env.SPD_API_URL?.replace(/\/$/, ''), slug = env.SPD_PROJECT_SLUG
   const sha = env.GITHUB_SHA ?? '', runKey = env.GITHUB_RUN_ID ?? new Date().toISOString().replace(/[:.]/g, '-')
   const resultsFile = join(root, 'review', 'results.json')
@@ -80,7 +88,10 @@ export async function postRehearsal(env: NodeJS.ProcessEnv = process.env): Promi
   const inventory = inventoryFrom(entries)
 
   let report: PlaywrightReport | null = null
-  try { if (existsSync(resultsFile)) report = JSON.parse(readFileSync(resultsFile, 'utf8')) } catch { report = null }
+  try { if (existsSync(resultsFile)) report = JSON.parse(readFileSync(resultsFile, 'utf8')) } catch {
+    console.warn(`  ${resultsFile} could not be parsed — treating the rehearsal as having no report`)
+    report = null
+  }
 
   let verdict: Verdict | null = null
   let description = 'Playwright produced no report'
@@ -107,7 +118,7 @@ export async function postRehearsal(env: NodeJS.ProcessEnv = process.env): Promi
     const size = statSync(localPath).size
     if (size === 0 || size > 40 * 1024 * 1024) return null
     try {
-      const res = await fetch(`${apiUrl}/upload`, {
+      const res = await fetchFn(`${apiUrl}/upload`, {
         method: 'POST', headers: auth,
         body: JSON.stringify({
           project_slug: slug, run_key: key, path: remotePath,
@@ -121,12 +132,20 @@ export async function postRehearsal(env: NodeJS.ProcessEnv = process.env): Promi
   }
 
   // 1. The screenplay itself (what Pete reads, even for scenes with no test).
-  for (const e of entries) if (e.avatar_path) e.avatar_url = await upload(e.avatar_path, `${e.actor_key}.svg`, 'personae')
-  const screenplayRes = await fetch(`${apiUrl}/screenplay-report`, {
-    method: 'POST', headers: auth,
-    body: JSON.stringify({ project_slug: slug, entries: entries.map(({ avatar_path: _, ...rest }) => rest) }),
-  })
-  if (!screenplayRes.ok) console.warn(`  screenplay-report: ${screenplayRes.status}`)
+  try {
+    for (const e of entries) if (e.avatar_path) e.avatar_url = await upload(e.avatar_path, `${e.actor_key}.svg`, 'personae')
+    const screenplayRes = await fetchFn(`${apiUrl}/screenplay-report`, {
+      method: 'POST', headers: auth,
+      body: JSON.stringify({ project_slug: slug, entries: entries.map(({ avatar_path: _, ...rest }) => rest) }),
+    })
+    if (!screenplayRes.ok) {
+      console.error(`✗ screenplay-report ${screenplayRes.status}`)
+      process.exitCode = 1
+    }
+  } catch (e) {
+    console.error(`✗ screenplay-report failed: ${(e as Error).message}`)
+    process.exitCode = 1
+  }
 
   // 2. Every scenario: performed ones with their evidence, the rest as not performed.
   const scenarioOf = new Map<ReportTest, ScenarioOutcome>()
@@ -177,31 +196,38 @@ export async function postRehearsal(env: NodeJS.ProcessEnv = process.env): Promi
         }
       } catch (e) { console.warn(`  walkthrough ${sSlug}: ${(e as Error).message}`) }
     }
+    const fixmeScene = t.status === 'fixme' && o ? o : null
     rows.push({
       feature_file: t.featureFile, scenario_name: t.title,
       scenario_tags: o?.scenario.tags ?? [], status, required: o?.scenario.required ?? false,
       duration_ms: r?.duration ?? null,
-      error_message: r?.error?.message ? stripAnsi(r.error.message).split('\n')[0] : null,
+      error_message: fixmeScene ? "This scene's test is marked fixme"
+        : r?.error?.message ? stripAnsi(r.error.message).split('\n')[0] : null,
       screenshot_url: screenshot, video_url: video, diff_url: diff,
-      sort_order: rows.length, frames, steps,
+      sort_order: rows.length, frames, steps: fixmeScene ? skippedSteps(fixmeScene) : steps,
     })
   }
   for (const o of outcomes.filter(x => x.tests.length === 0)) rows.push(notPerformedRow(o, rows.length))
 
-  const res = await fetch(`${apiUrl}/test-report`, {
-    method: 'POST', headers: auth,
-    body: JSON.stringify(runPayload({
-      slug, sha, verdict, description, scenarios: rows,
-      runUrl: env.GITHUB_SERVER_URL && env.GITHUB_REPOSITORY && env.GITHUB_RUN_ID
-        ? `${env.GITHUB_SERVER_URL}/${env.GITHUB_REPOSITORY}/actions/runs/${env.GITHUB_RUN_ID}` : null,
-      runKey, baseUrl: env.BASE_URL ?? '',
-    })),
-  })
-  if (!res.ok) {
-    console.error(`✗ test-report ${res.status}: ${(await res.text()).slice(0, 300)}`)
+  try {
+    const res = await fetchFn(`${apiUrl}/test-report`, {
+      method: 'POST', headers: auth,
+      body: JSON.stringify(runPayload({
+        slug, sha, verdict, description, scenarios: rows,
+        runUrl: env.GITHUB_SERVER_URL && env.GITHUB_REPOSITORY && env.GITHUB_RUN_ID
+          ? `${env.GITHUB_SERVER_URL}/${env.GITHUB_REPOSITORY}/actions/runs/${env.GITHUB_RUN_ID}` : null,
+        runKey, baseUrl: env.BASE_URL ?? '',
+      })),
+    })
+    if (!res.ok) {
+      console.error(`✗ test-report ${res.status}: ${(await res.text()).slice(0, 300)}`)
+      process.exitCode = 1
+    } else {
+      console.log(`✓ posted ${rows.length} scenario row(s) — ${description}`)
+    }
+  } catch (e) {
+    console.error(`✗ test-report failed: ${(e as Error).message}`)
     process.exitCode = 1
-  } else {
-    console.log(`✓ posted ${rows.length} scenario row(s) — ${description}`)
   }
   return result
 }

@@ -1,5 +1,8 @@
-import { expect, test } from 'bun:test'
-import { notPerformedRow, runPayload } from './post.ts'
+import { afterEach, expect, test } from 'bun:test'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { notPerformedRow, postRehearsal, runPayload } from './post.ts'
 import type { ScenarioOutcome } from './verdict.ts'
 
 const outcome: ScenarioOutcome = {
@@ -38,4 +41,101 @@ test('no report means verdict error and a failed run', () => {
   const p = runPayload({ slug: 's', sha: 'b'.repeat(40), verdict: null, description: 'Playwright produced no report',
     scenarios: [], runUrl: null, runKey: 'k', baseUrl: 'u' })
   expect(p).toMatchObject({ status: 'failed', verdict: 'error', required_total: null })
+})
+
+// --- postRehearsal: failure paths and the fixme row ---------------------
+
+const dirs: string[] = []
+afterEach(() => {
+  process.exitCode = 0
+  while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true })
+})
+
+function project(opts: { report?: 'pass' | 'fixme' | 'none' | 'garbage' } = {}): string {
+  const root = mkdtempSync(join(tmpdir(), 'rehearsal-post-'))
+  dirs.push(root)
+  mkdirSync(join(root, 'screenplay', 'features'), { recursive: true })
+  writeFileSync(join(root, 'screenplay', 'features', 'a.feature'),
+    'Feature: A\n  Scenario: Kira shares\n    Given Kira is signed in\n    When she shares\n')
+  const kind = opts.report ?? 'pass'
+  if (kind !== 'none') {
+    mkdirSync(join(root, 'review'), { recursive: true })
+    const annotations = kind === 'fixme' ? [{ type: 'fixme' }] : []
+    const report = {
+      stats: { expected: 1, unexpected: 0, skipped: 0 },
+      suites: [{ title: 'a.spec.ts', file: 'a.spec.ts', specs: [{
+        title: 'Kira shares', ok: true,
+        tests: [{ annotations, results: [{ status: kind === 'fixme' ? 'skipped' : 'passed', duration: 5, attachments: [] }] }],
+      }] }],
+    }
+    writeFileSync(join(root, 'review', 'results.json'), kind === 'garbage' ? '{not json' : JSON.stringify(report))
+  }
+  return root
+}
+
+const env = { SPD_API_TOKEN: 't', SPD_API_URL: 'https://api.test', SPD_PROJECT_SLUG: 'p', GITHUB_SHA: 'c'.repeat(40) }
+
+function stub(respond: (url: string) => Response | Promise<Response>) {
+  const calls: Array<{ url: string; body: any }> = []
+  const fetchFn = (async (url: string, init?: RequestInit) => {
+    calls.push({ url, body: init?.body ? JSON.parse(String(init.body)) : null })
+    return respond(url)
+  }) as unknown as typeof fetch
+  return { calls, fetchFn }
+}
+const ok = () => new Response('{}', { status: 201 })
+
+test('without a token nothing is posted but the verdict is still returned', async () => {
+  const { calls, fetchFn } = stub(ok)
+  const r = await postRehearsal({ ...env, SPD_API_TOKEN: undefined }, { fetchFn, cwd: project() })
+  expect(r.verdict).toBe('passed')
+  expect(calls).toEqual([])
+})
+
+test('a network error is logged, fails the run, and still returns the verdict', async () => {
+  const { calls, fetchFn } = stub(() => { throw new Error('connection reset') })
+  const r = await postRehearsal(env, { fetchFn, cwd: project() })
+  expect(r.verdict).toBe('passed')
+  expect(process.exitCode).toBe(1)
+  expect(calls.map(c => c.url)).toEqual(['https://api.test/screenplay-report', 'https://api.test/test-report'])
+})
+
+test('a rejected screenplay still posts the test report, and the run fails', async () => {
+  const { calls, fetchFn } = stub(url => url.endsWith('/screenplay-report') ? new Response('no', { status: 500 }) : ok())
+  const r = await postRehearsal(env, { fetchFn, cwd: project() })
+  expect(r.verdict).toBe('passed')
+  expect(process.exitCode).toBe(1)
+  expect(calls.some(c => c.url.endsWith('/test-report'))).toBe(true)
+})
+
+test('no results.json posts verdict error and a failed run', async () => {
+  const { calls, fetchFn } = stub(ok)
+  const r = await postRehearsal(env, { fetchFn, cwd: project({ report: 'none' }) })
+  expect(r.verdict).toBe('error')
+  const body = calls.find(c => c.url.endsWith('/test-report'))!.body
+  expect(body).toMatchObject({ status: 'failed', verdict: 'error' })
+  expect(process.exitCode).toBe(0)
+})
+
+test('an unparseable results.json is warned about and treated as no report', async () => {
+  const warnings: string[] = []
+  const orig = console.warn
+  console.warn = (...a: unknown[]) => { warnings.push(a.join(' ')) }
+  try {
+    const { fetchFn } = stub(ok)
+    const r = await postRehearsal(env, { fetchFn, cwd: project({ report: 'garbage' }) })
+    expect(r.verdict).toBe('error')
+  } finally { console.warn = orig }
+  expect(warnings.some(w => w.includes('could not be parsed'))).toBe(true)
+})
+
+test('a fixme test is posted as not performed with the scene steps and a reason', async () => {
+  const { calls, fetchFn } = stub(ok)
+  await postRehearsal(env, { fetchFn, cwd: project({ report: 'fixme' }) })
+  const row = calls.find(c => c.url.endsWith('/test-report'))!.body.scenarios[0]
+  expect(row).toMatchObject({ status: 'not_performed', error_message: "This scene's test is marked fixme" })
+  expect(row.steps).toEqual([
+    { index: 1, keyword: 'Given', text: 'Kira is signed in', status: 'skipped', error: null, duration_ms: null, focus_actor: null },
+    { index: 2, keyword: 'When', text: 'she shares', status: 'skipped', error: null, duration_ms: null, focus_actor: null },
+  ])
 })
