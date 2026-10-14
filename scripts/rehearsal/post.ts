@@ -1,0 +1,207 @@
+// scripts/rehearsal/post.ts — post a staging dress rehearsal to the dashboard:
+// the screenplay (cast, setting, scenes), every scenario's result with its
+// evidence, and the gate verdict. The evidence upload follows
+// foundation-template/scripts/post-spd-results.ts.
+import { existsSync, readFileSync, statSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { basename, extname, join } from 'node:path'
+import { collectCastEntries } from './screenplay.ts'
+import { finalResult, runTestsFrom, slugify, splitKeyword, stripAnsi, type PlaywrightReport, type ReportTest } from './report.ts'
+import { inventoryFrom, matchScenarios, summaryLine, verdictOf, type ScenarioOutcome, type Verdict } from './verdict.ts'
+
+interface StepRow { index: number; keyword: string; text: string; status: 'passed' | 'failed' | 'skipped'; error: string | null; duration_ms: number | null; focus_actor: string | null }
+interface FrameRow {
+  step_index: number; step_title: string; narration: string | null; step_status: 'passed' | 'failed' | 'skipped'
+  actor_id: string; actor_name: string; actor_role: string | null; actor_device: string | null
+  is_focus: boolean; frame_url: string; content_hash: string | null; page_url: string | null
+  width: number | null; height: number | null; captured_at: string | null
+}
+export interface ScenarioRow {
+  feature_file: string; scenario_name: string; scenario_tags: string[]
+  status: 'passed' | 'failed' | 'skipped' | 'not_performed'
+  required: boolean; duration_ms: number | null; error_message: string | null
+  screenshot_url: string | null; video_url: string | null; diff_url: string | null
+  sort_order: number; frames: FrameRow[]; steps: StepRow[]
+}
+interface WalkthroughManifest {
+  actors: Array<{ id: string; name: string; role: string; device?: string }>
+  steps: Array<{
+    index: number; title: string; narration: string; focus_actor_id: string | null
+    status: 'passed' | 'failed'; error_message: string | null; duration_ms?: number | null
+    frames: Array<{ actor_id: string; file: string; url: string; width: number | null; height: number | null; captured_at: string; error: string | null }>
+  }>
+}
+
+const MIME: Record<string, string> = {
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp',
+  '.webm': 'video/webm', '.mp4': 'video/mp4', '.svg': 'image/svg+xml',
+}
+
+export function notPerformedRow(o: ScenarioOutcome, sortOrder: number): ScenarioRow {
+  return {
+    feature_file: o.scenario.featureFile, scenario_name: o.scenario.name, scenario_tags: o.scenario.tags,
+    status: 'not_performed', required: o.scenario.required, duration_ms: null,
+    error_message: 'This scene has no test yet',
+    screenshot_url: null, video_url: null, diff_url: null, sort_order: sortOrder, frames: [],
+    steps: o.scenario.steps.map((s, i) => ({
+      index: i + 1, keyword: s.keyword, text: s.text, status: 'skipped', error: null, duration_ms: null, focus_actor: null,
+    })),
+  }
+}
+
+export function runPayload(a: {
+  slug: string; sha: string; verdict: Verdict | null; description: string
+  scenarios: ScenarioRow[]; runUrl: string | null; runKey: string; baseUrl: string
+}): Record<string, unknown> {
+  const v = a.verdict
+  return {
+    project_slug: a.slug, branch: 'staging', commit_sha: a.sha,
+    status: v?.verdict === 'passed' ? 'passed' : 'failed',
+    kind: 'dress_rehearsal', verdict: v?.verdict ?? 'error',
+    required_total: v?.requiredTotal ?? null, required_passed: v?.requiredPassed ?? null,
+    not_performed: v?.notPerformed ?? null, later_total: v?.laterTotal ?? null,
+    total_tests: a.scenarios.length,
+    passed_tests: a.scenarios.filter(s => s.status === 'passed').length,
+    failed_tests: a.scenarios.filter(s => s.status === 'failed').length,
+    triggered_by: 'dress-rehearsal', runner_name: 'github-actions', report_url: a.runUrl,
+    metadata: { run_key: a.runKey, base_url: a.baseUrl, summary: a.description },
+    scenarios: a.scenarios,
+  }
+}
+
+export async function postRehearsal(env: NodeJS.ProcessEnv = process.env): Promise<{ verdict: 'passed' | 'failed' | 'error'; description: string }> {
+  const root = process.cwd()
+  const token = env.SPD_API_TOKEN, apiUrl = env.SPD_API_URL?.replace(/\/$/, ''), slug = env.SPD_PROJECT_SLUG
+  const sha = env.GITHUB_SHA ?? '', runKey = env.GITHUB_RUN_ID ?? new Date().toISOString().replace(/[:.]/g, '-')
+  const resultsFile = join(root, 'review', 'results.json')
+  const walkDir = join(root, 'review', 'walkthroughs')
+
+  const entries = collectCastEntries(join(root, 'screenplay'))
+  const inventory = inventoryFrom(entries)
+
+  let report: PlaywrightReport | null = null
+  try { if (existsSync(resultsFile)) report = JSON.parse(readFileSync(resultsFile, 'utf8')) } catch { report = null }
+
+  let verdict: Verdict | null = null
+  let description = 'Playwright produced no report'
+  let outcomes: ScenarioOutcome[] = []
+  let tests: ReportTest[] = []
+  if (report?.suites) {
+    tests = runTestsFrom(report)
+    const m = matchScenarios(inventory, tests)
+    outcomes = m.outcomes
+    verdict = verdictOf(outcomes)
+    description = summaryLine(verdict)
+    for (const o of m.orphans) console.warn(`  test with no scenario: ${o.featureFile} :: ${o.title}`)
+  }
+  const result = { verdict: (verdict?.verdict ?? 'error') as 'passed' | 'failed' | 'error', description }
+
+  if (!token || !apiUrl || !slug) {
+    console.warn('SPD_API_TOKEN, SPD_API_URL or SPD_PROJECT_SLUG missing — not posting to the dashboard')
+    return result
+  }
+  const auth = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }
+
+  async function upload(localPath: string, remotePath: string, key = runKey): Promise<string | null> {
+    if (!localPath || !existsSync(localPath)) return null
+    const size = statSync(localPath).size
+    if (size === 0 || size > 40 * 1024 * 1024) return null
+    try {
+      const res = await fetch(`${apiUrl}/upload`, {
+        method: 'POST', headers: auth,
+        body: JSON.stringify({
+          project_slug: slug, run_key: key, path: remotePath,
+          content_type: MIME[extname(localPath).toLowerCase()] ?? 'application/octet-stream',
+          data_b64: readFileSync(localPath).toString('base64'),
+        }),
+      })
+      if (!res.ok) { console.warn(`  upload ${remotePath}: ${res.status}`); return null }
+      return ((await res.json()) as { url?: string }).url ?? null
+    } catch (e) { console.warn(`  upload ${remotePath}: ${(e as Error).message}`); return null }
+  }
+
+  // 1. The screenplay itself (what Pete reads, even for scenes with no test).
+  for (const e of entries) if (e.avatar_path) e.avatar_url = await upload(e.avatar_path, `${e.actor_key}.svg`, 'personae')
+  const screenplayRes = await fetch(`${apiUrl}/screenplay-report`, {
+    method: 'POST', headers: auth,
+    body: JSON.stringify({ project_slug: slug, entries: entries.map(({ avatar_path: _, ...rest }) => rest) }),
+  })
+  if (!screenplayRes.ok) console.warn(`  screenplay-report: ${screenplayRes.status}`)
+
+  // 2. Every scenario: performed ones with their evidence, the rest as not performed.
+  const scenarioOf = new Map<ReportTest, ScenarioOutcome>()
+  for (const o of outcomes) for (const t of o.tests) scenarioOf.set(t as ReportTest, o)
+  const rows: ScenarioRow[] = []
+  for (const t of tests) {
+    const o = scenarioOf.get(t)
+    const r = finalResult(t.spec)
+    const status: ScenarioRow['status'] = t.status === 'fixme' ? 'not_performed' : t.status
+    const sSlug = slugify(t.rawTitle)
+    const atts = r?.attachments ?? []
+    let screenshot: string | null = null, video: string | null = null, diff: string | null = null
+    if (status === 'passed' || status === 'failed') {
+      const shot = atts.find(a => a.name === 'screenshot' && a.path) ?? atts.find(a => a.contentType?.startsWith('image/') && a.path && !/-(expected|diff)\./.test(a.path))
+      const vid = atts.find(a => a.name === 'video' && a.path)
+      const dif = atts.find(a => a.path && /-diff\.png$/.test(a.path))
+      if (shot?.path) screenshot = await upload(shot.path, `${sSlug}/screenshot${extname(shot.path)}`)
+      if (vid?.path) video = await upload(vid.path, `${sSlug}/video${extname(vid.path)}`)
+      if (dif?.path) diff = await upload(dif.path, `${sSlug}/diff.png`)
+    }
+    const frames: FrameRow[] = []
+    let steps: StepRow[] = []
+    const manifestPath = join(walkDir, sSlug, 'walkthrough.json')
+    if ((status === 'passed' || status === 'failed') && existsSync(manifestPath)) {
+      try {
+        const m = JSON.parse(readFileSync(manifestPath, 'utf8')) as WalkthroughManifest
+        steps = m.steps.map(s => ({
+          index: s.index, ...splitKeyword(s.title), status: s.status,
+          error: s.status === 'failed' ? stripAnsi(r?.error?.message ?? s.error_message ?? '') || null : null,
+          duration_ms: s.duration_ms ?? null, focus_actor: s.focus_actor_id,
+        }))
+        const actorById = new Map(m.actors.map(a => [a.id, a]))
+        for (const step of m.steps) for (const fr of step.frames) {
+          if (fr.error) continue
+          const local = join(walkDir, sSlug, fr.file)
+          const url = await upload(local, `${sSlug}/frames/${basename(fr.file)}`)
+          if (!url) continue
+          const actor = actorById.get(fr.actor_id)
+          frames.push({
+            step_index: step.index, step_title: step.title,
+            narration: step.narration && step.narration !== step.title ? step.narration : null,
+            step_status: step.status, actor_id: fr.actor_id, actor_name: actor?.name ?? fr.actor_id,
+            actor_role: actor?.role ?? null, actor_device: actor?.device ?? null,
+            is_focus: step.focus_actor_id === fr.actor_id, frame_url: url,
+            content_hash: (() => { try { return createHash('sha256').update(readFileSync(local)).digest('hex') } catch { return null } })(),
+            page_url: fr.url ?? null, width: fr.width, height: fr.height, captured_at: fr.captured_at ?? null,
+          })
+        }
+      } catch (e) { console.warn(`  walkthrough ${sSlug}: ${(e as Error).message}`) }
+    }
+    rows.push({
+      feature_file: t.featureFile, scenario_name: t.title,
+      scenario_tags: o?.scenario.tags ?? [], status, required: o?.scenario.required ?? false,
+      duration_ms: r?.duration ?? null,
+      error_message: r?.error?.message ? stripAnsi(r.error.message).split('\n')[0] : null,
+      screenshot_url: screenshot, video_url: video, diff_url: diff,
+      sort_order: rows.length, frames, steps,
+    })
+  }
+  for (const o of outcomes.filter(x => x.tests.length === 0)) rows.push(notPerformedRow(o, rows.length))
+
+  const res = await fetch(`${apiUrl}/test-report`, {
+    method: 'POST', headers: auth,
+    body: JSON.stringify(runPayload({
+      slug, sha, verdict, description, scenarios: rows,
+      runUrl: env.GITHUB_SERVER_URL && env.GITHUB_REPOSITORY && env.GITHUB_RUN_ID
+        ? `${env.GITHUB_SERVER_URL}/${env.GITHUB_REPOSITORY}/actions/runs/${env.GITHUB_RUN_ID}` : null,
+      runKey, baseUrl: env.BASE_URL ?? '',
+    })),
+  })
+  if (!res.ok) {
+    console.error(`✗ test-report ${res.status}: ${(await res.text()).slice(0, 300)}`)
+    process.exitCode = 1
+  } else {
+    console.log(`✓ posted ${rows.length} scenario row(s) — ${description}`)
+  }
+  return result
+}
