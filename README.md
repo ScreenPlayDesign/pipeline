@@ -64,6 +64,22 @@ jobs:
       PR_BOT_TOKEN: ${{ secrets.PR_BOT_TOKEN }}
 ```
 
+Callers pass `pipeline-ref` with the same commit they pin in `uses:` (the
+rehearsal checks out its scripts at that commit):
+
+```yaml
+jobs:
+  rehearse:
+    uses: ScreenPlayDesign/pipeline/.github/workflows/dress-rehearsal.yml@<commit sha>
+    with:
+      pipeline-ref: <commit sha>
+    secrets:
+      SPD_API_TOKEN:                    ${{ secrets.SPD_API_TOKEN }}
+      STAGING_DB_URL:                   ${{ secrets.STAGING_DB_URL }}
+      STAGING_SUPABASE_URL:             ${{ secrets.STAGING_SUPABASE_URL }}
+      STAGING_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.STAGING_SUPABASE_PUBLISHABLE_KEY }}
+```
+
 Pass each secret by name — never `secrets: inherit`. This repo is public:
 with `inherit`, one bad change here would hand every caller's secrets to
 it. Each workflow declares the secrets it accepts under `workflow_call:`
@@ -89,6 +105,8 @@ status checks).
 |---|---|---|
 | `ci.yml` | `pull_request` on staging/prod (+ `push` on prod for some projects) | Two parallel jobs: TypeScript + build, and the Gherkin/Playwright visual gate |
 | `deploy-prod.yml` | `workflow_dispatch` with `rollback-to-tag` (a normal push does nothing here anymore) | **Rollback only.** Overlays an old release tag's file tree onto the current `prod` tip as a new forward commit (never force-pushes or resets history). Gated behind this workflow's `environment: production` approval — the one remaining thing that gate meaningfully blocks, now that release tagging/CHANGELOG happens automatically via `github-app`'s `publishRelease()` instead (see that repo's `handlers.ts`). See the file's own header comment for the full mechanics and the trade-off this split creates. |
+| `dress-rehearsal.yml` | `push` on staging (+ `workflow_dispatch`) via `run-dress-rehearsal.yml` | Waits until staging serves the commit, resets the cast, performs every Gherkin scene against staging, posts scenes/results/screenshots and the verdict to screenplaydesign.com, and sets the required commit status `screenplay / dress rehearsal`. Scenarios tagged `@later` never block. |
+| `approve-screenshots.yml` | `workflow_dispatch` via `run-approve-screenshots.yml` | Renders every scene on Linux against staging and commits new or changed `*-linux.png` baselines to the `design` lane for the designer to approve. Needs `PR_BOT_TOKEN`. |
 
 `deploy-dev.yml` and `deploy-staging.yml` no longer exist — deleted
 2026-07-06. They only ever built an artifact for `github-app`'s deploy-relay

@@ -1,0 +1,140 @@
+name: dress-rehearsal
+
+# Performs every Gherkin scene against the project's staging site and staging
+# database, posts the result to screenplaydesign.com, and sets the commit
+# status `screenplay / dress rehearsal` — the check the staging → prod PR
+# requires. Spec: web-dashboard/docs/superpowers/specs/2026-10-14-rehearsal-gate-design.md
+on:
+  workflow_call:
+    inputs:
+      pipeline-ref:
+        description: 'The ScreenPlayDesign/pipeline commit this caller pins (the scripts are checked out at it)'
+        type: string
+        required: true
+      api-url:
+        description: 'SPD dashboard cli-api URL'
+        type: string
+        default: 'https://hrbfsfvyatrdxegogdfz.supabase.co/functions/v1/cli-api'
+    secrets:
+      SPD_API_TOKEN:
+        description: 'Per-project CI token (spd ci setup)'
+        required: false
+      STAGING_DB_URL:
+        required: false
+      STAGING_SUPABASE_URL:
+        required: false
+      STAGING_SUPABASE_PUBLISHABLE_KEY:
+        required: false
+
+permissions:
+  contents: read
+  statuses: write
+
+jobs:
+  rehearse:
+    name: Perform every scene on staging
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      SHA: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: ScreenPlayDesign/pipeline
+          ref: ${{ inputs.pipeline-ref }}
+          path: .spd-pipeline
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: latest
+
+      - name: Read spd_config.toml
+        id: cfg
+        run: bun .spd-pipeline/scripts/rehearsal/cli.ts config >> "$GITHUB_OUTPUT"
+
+      - name: Mark the rehearsal pending
+        env:
+          TARGET: https://screenplaydesign.com/pr/${{ steps.cfg.outputs.slug }}/screenplay
+        run: |
+          gh api "repos/$REPO/statuses/$SHA" -f state=pending -f context='screenplay / dress rehearsal' \
+            -f description='Waiting for staging to deploy' -f target_url="$TARGET" >/dev/null
+
+      - name: Wait until staging serves this commit
+        id: wait
+        env:
+          STAGING_URL: ${{ steps.cfg.outputs.staging_url }}
+          GITHUB_SHA: ${{ github.sha }}
+        run: bun .spd-pipeline/scripts/rehearsal/cli.ts wait
+
+      - name: Install dependencies and Chromium
+        run: |
+          bun install
+          bunx playwright install --with-deps chromium
+
+      - name: Reset the cast on staging
+        env:
+          STAGING_DB_URL: ${{ secrets.STAGING_DB_URL }}
+        run: |
+          if [ -z "$STAGING_DB_URL" ] || [ ! -f supabase/testing/reset.sql ]; then
+            echo "::warning::No STAGING_DB_URL or supabase/testing/reset.sql — cast not reset; scenes that need the cast will skip and count as not passed."
+            exit 0
+          fi
+          sudo apt-get install -y -qq postgresql-client >/dev/null
+          psql "$STAGING_DB_URL" -v ON_ERROR_STOP=1 -q -f supabase/testing/reset.sql
+
+      - name: Perform the scenes
+        id: playwright
+        continue-on-error: true
+        env:
+          CI: '1'
+          E2E_CAST: '1'
+          SPD_ALLOW_HOST_DEV: '1'
+          BASE_URL: ${{ steps.cfg.outputs.staging_url }}
+          VITE_SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
+          VITE_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.STAGING_SUPABASE_PUBLISHABLE_KEY }}
+          PLAYWRIGHT_JSON_OUTPUT_NAME: review/results.json
+        run: bunx playwright test --retries=0 --workers="$(nproc)" --reporter=line,json
+
+      - name: Build the walkthrough report
+        if: always()
+        run: |
+          if grep -q '"report:walkthrough"' package.json; then bun run report:walkthrough || true; fi
+
+      - name: Keep the evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dress-rehearsal-${{ github.run_number }}
+          path: review/
+          retention-days: 14
+
+      - name: Post the rehearsal to the dashboard
+        id: post
+        if: always() && steps.cfg.outcome == 'success' && steps.wait.outcome == 'success'
+        env:
+          SPD_API_TOKEN: ${{ secrets.SPD_API_TOKEN }}
+          SPD_API_URL: ${{ inputs.api-url }}
+          SPD_PROJECT_SLUG: ${{ steps.cfg.outputs.slug }}
+          BASE_URL: ${{ steps.cfg.outputs.staging_url }}
+        run: bun .spd-pipeline/scripts/rehearsal/cli.ts post
+
+      - name: Set the gate's commit status
+        if: always()
+        env:
+          VERDICT: ${{ steps.post.outputs.verdict }}
+          DESC: ${{ steps.post.outputs.description }}
+          TARGET: https://screenplaydesign.com/pr/${{ steps.cfg.outputs.slug }}/screenplay
+          WAITED: ${{ steps.wait.outcome }}
+        run: |
+          if [ "$WAITED" = failure ]; then VERDICT=error; DESC="Staging never served this commit within 15 minutes"; fi
+          case "$VERDICT" in
+            passed) STATE=success ;;
+            failed) STATE=failure ;;
+            *)      STATE=error; DESC="${DESC:-The rehearsal did not finish — see the run log}" ;;
+          esac
+          gh api "repos/$REPO/statuses/$SHA" -f state="$STATE" -f context='screenplay / dress rehearsal' \
+            -f description="${DESC:0:140}" -f target_url="$TARGET" >/dev/null
+          echo "screenplay / dress rehearsal: $STATE — $DESC"
+          [ "$STATE" = success ]

@@ -1,0 +1,83 @@
+name: approve-screenshots
+
+# Renders every scene on Linux against staging and commits new or changed
+# *-linux.png baselines to the `design` lane, whose PR shows each image and
+# its diff for the designer to approve. Run by hand. Never touches -darwin.png.
+on:
+  workflow_call:
+    inputs:
+      pipeline-ref:
+        type: string
+        required: true
+    secrets:
+      PR_BOT_TOKEN:
+        required: false
+      STAGING_DB_URL:
+        required: false
+      STAGING_SUPABASE_URL:
+        required: false
+      STAGING_SUPABASE_PUBLISHABLE_KEY:
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  render:
+    name: Render Linux baselines onto the design lane
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Require PR_BOT_TOKEN
+        env:
+          PR_BOT_TOKEN: ${{ secrets.PR_BOT_TOKEN }}
+        run: |
+          if [ -z "$PR_BOT_TOKEN" ]; then
+            echo "::error::PR_BOT_TOKEN is not set — a push with the default token would not run the design lane's CI."
+            exit 1
+          fi
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: design
+          token: ${{ secrets.PR_BOT_TOKEN }}
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: ScreenPlayDesign/pipeline
+          ref: ${{ inputs.pipeline-ref }}
+          path: .spd-pipeline
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: latest
+      - name: Read spd_config.toml
+        id: cfg
+        run: bun .spd-pipeline/scripts/rehearsal/cli.ts config >> "$GITHUB_OUTPUT"
+      - name: Install dependencies and Chromium
+        run: |
+          bun install
+          bunx playwright install --with-deps chromium
+      - name: Reset the cast on staging
+        env:
+          STAGING_DB_URL: ${{ secrets.STAGING_DB_URL }}
+        run: |
+          if [ -z "$STAGING_DB_URL" ] || [ ! -f supabase/testing/reset.sql ]; then exit 0; fi
+          sudo apt-get install -y -qq postgresql-client >/dev/null
+          psql "$STAGING_DB_URL" -v ON_ERROR_STOP=1 -q -f supabase/testing/reset.sql
+      - name: Render the scenes, writing changed baselines
+        continue-on-error: true
+        env:
+          CI: '1'
+          E2E_CAST: '1'
+          SPD_ALLOW_HOST_DEV: '1'
+          BASE_URL: ${{ steps.cfg.outputs.staging_url }}
+          VITE_SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
+          VITE_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.STAGING_SUPABASE_PUBLISHABLE_KEY }}
+        run: bunx playwright test --retries=0 --workers="$(nproc)" --update-snapshots=changed --reporter=line
+      - name: Commit the Linux baselines to the design lane
+        run: |
+          git ls-files --others --modified -- '*-linux.png' > /tmp/baselines.txt
+          if [ ! -s /tmp/baselines.txt ]; then echo "No new or changed Linux baselines."; exit 0; fi
+          git config user.name  "spd-pipeline"
+          git config user.email "spd-pipeline@users.noreply.github.com"
+          xargs -a /tmp/baselines.txt git add --
+          git commit -m "screenshots: Linux baselines for $(wc -l < /tmp/baselines.txt | tr -d ' ') scene image(s), to approve"
+          git push origin HEAD:design
