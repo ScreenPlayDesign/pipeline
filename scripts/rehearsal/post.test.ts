@@ -176,14 +176,16 @@ test('passed and failed counts cover only required scenes, so a failing @later s
   expect(p).toMatchObject({ total_tests: 3, passed_tests: 1, failed_tests: 0 })
 })
 
-test('staging never serving the commit posts the run as error with the reason, without reading any report', async () => {
-  const { calls, fetchFn } = stub(ok)
-  const r = await postRehearsal({ ...env, WAITED: 'failure', PLAYWRIGHT_OUTCOME: 'skipped' }, { fetchFn, cwd: project() })
-  expect(r).toEqual({ verdict: 'error', description: 'Staging never served this commit within 15 minutes' })
-  const body = calls.find(c => c.url.endsWith('/test-report'))!.body
-  expect(body).toMatchObject({ status: 'failed', verdict: 'error', scenarios: [],
-    metadata: { summary: 'Staging never served this commit within 15 minutes' } })
-})
+for (const waited of ['failure', 'cancelled']) {
+  test(`staging wait ${waited} posts the run as error with the reason, without reading any report`, async () => {
+    const { calls, fetchFn } = stub(ok)
+    const r = await postRehearsal({ ...env, WAITED: waited, PLAYWRIGHT_OUTCOME: 'skipped' }, { fetchFn, cwd: project() })
+    expect(r).toEqual({ verdict: 'error', description: 'Staging never served this commit within 15 minutes' })
+    const body = calls.find(c => c.url.endsWith('/test-report'))!.body
+    expect(body).toMatchObject({ status: 'failed', verdict: 'error', scenarios: [],
+      metadata: { summary: 'Staging never served this commit within 15 minutes' } })
+  })
+}
 
 for (const outcome of ['skipped', 'cancelled']) {
   test(`Playwright ${outcome} is an error even when an old results.json is present`, async () => {

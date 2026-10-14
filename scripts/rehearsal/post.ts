@@ -92,7 +92,7 @@ export async function postRehearsal(
 
   // Staging never served this commit: nothing was performed, so no report is
   // read (any results.json is stale) and the run is posted as an error.
-  const neverServed = env.WAITED === 'failure'
+  const neverServed = env.WAITED !== undefined && env.WAITED !== 'success'
   let report: PlaywrightReport | null = null
   try { if (!neverServed && existsSync(resultsFile)) {
       if (!insideAny(evidenceRoots, resultsFile)) throw new Error('refused: results.json is not a regular file under review/')
