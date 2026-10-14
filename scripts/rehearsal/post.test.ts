@@ -285,3 +285,18 @@ test('a results.json that is a symlink to a file outside review/ is treated as n
   const r = await postRehearsal(env, { fetchFn, cwd: root })
   expect(r.verdict).toBe('error')
 })
+
+test('with no posting token it prints a warning annotation and still returns the verdict', async () => {
+  const logs: string[] = []
+  const origLog = console.log, origWarn = console.warn
+  console.log = (...a: unknown[]) => { logs.push(a.join(' ')) }
+  console.warn = () => {}
+  try {
+    const { calls, fetchFn } = stub(ok)
+    const { SPD_API_TOKEN: _drop, ...noToken } = env
+    const r = await postRehearsal(noToken, { fetchFn, cwd: project() })
+    expect(r.verdict).toBe('passed')
+    expect(calls).toEqual([])
+  } finally { console.log = origLog; console.warn = origWarn }
+  expect(logs).toContain('::warning::SPD_REHEARSAL_TOKEN is not set — the rehearsal was not posted to the dashboard (run spd ci setup)')
+})

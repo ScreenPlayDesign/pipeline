@@ -5,11 +5,11 @@ name: dress-rehearsal
 # status `screenplay / dress rehearsal` — the check the staging → prod PR
 # requires. Spec: web-dashboard/docs/superpowers/specs/2026-10-14-rehearsal-gate-design.md
 #
-# Three jobs, so project code never runs where a token or the right to set
+# Four jobs, so project code never runs where a token or the right to set
 # statuses lives:
 #   start   — config, pending status, wait for staging (no project code)
 #   reset   — runs reset.sql as SQL text through Bun's driver; the only job given STAGING_DB_URL
-#   perform — cast reset first, then project code (no dashboard token, no status rights)
+#   perform — project code only: Playwright against staging (no DB URL, no dashboard token, no status rights)
 #   verdict — fresh runner, no project code executed: posts and sets the status
 # Pipeline scripts run from $RUNNER_TEMP/spd-pipeline with --no-env-file, so a
 # project's bunfig.toml or .env can never load into them.
@@ -182,7 +182,10 @@ jobs:
       - name: Name the evidence
         id: evidence
         if: always()
-        run: echo "name=dress-rehearsal-${{ github.run_number }}-${{ github.run_attempt }}" >> "$GITHUB_OUTPUT"
+        env:
+          RUN_NUMBER: ${{ github.run_number }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: echo "name=dress-rehearsal-${RUN_NUMBER}-${RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
       - name: Keep the evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -194,7 +197,9 @@ jobs:
   verdict:
     name: Post the verdict
     needs: [start, reset, perform]
-    if: always() && needs.start.outputs.slug != ''
+    # Not always(): a run cancelled by a newer staging push must not post an error for the superseded commit.
+    # A failed start (e.g. the wait timing out) is not a cancellation, so it still reaches here.
+    if: ${{ !cancelled() && needs.start.outputs.slug != '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:

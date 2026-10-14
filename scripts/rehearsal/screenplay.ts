@@ -73,13 +73,18 @@ export function parseScenarios(content: string): ScriptScenario[] {
   return out
 }
 
+/** A regular file, never a symlink (a symlink could point outside screenplay/). */
+function isRegularFile(p: string): boolean {
+  try { return fs.lstatSync(p).isFile() } catch { return false }
+}
+
 function listMarkdownRecursive(dir: string): string[] {
   if (!fs.existsSync(dir)) return []
   const out: string[] = []
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     const full = path.join(dir, entry.name)
     if (entry.isDirectory()) out.push(...listMarkdownRecursive(full))
-    else if (entry.name.endsWith('.md')) out.push(full)
+    else if (entry.isFile() && entry.name.endsWith('.md')) out.push(full)   // isFile() is false for a symlink
   }
   return out
 }
@@ -120,7 +125,7 @@ export function collectCastEntries(screenplayRoot: string): CastEntry[] {
         entries.push({
           kind, file_path: rel(full), discipline: frontmatter?.discipline ?? null, summary: summarize(body),
           ...personaIdentity(frontmatter, base),
-          avatar_path: isSettings && fs.existsSync(avatar) ? avatar : undefined,
+          avatar_path: isSettings && isRegularFile(avatar) ? avatar : undefined,
         })
       } else {
         entries.push({
@@ -137,6 +142,7 @@ export function collectCastEntries(screenplayRoot: string): CastEntry[] {
   if (fs.existsSync(featuresDir)) {
     for (const file of fs.readdirSync(featuresDir).filter(f => f.endsWith('.feature')).sort()) {
       const full = path.join(featuresDir, file)
+      if (!isRegularFile(full)) continue
       const content = fs.readFileSync(full, 'utf8')
       const scenarios = parseScenarios(content)
       const descMatch = content.match(/^Feature:.*\n([\s\S]*?)(?=\n\s*(Background|Scenario|Rule|@))/m)

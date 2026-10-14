@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from 'bun:test'
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { collectCastEntries, parseScenarios } from './screenplay.ts'
@@ -86,5 +86,26 @@ describe('collectCastEntries', () => {
     expect(beth).toMatchObject({ actor_key: 'beth', name: 'Beth', role: 'attendee', device: 'iPhone SE' })
     expect(beth.avatar_path).toBe(join(sp, 'personae', 'beth-iphone-se', 'avatar.svg'))
     expect(entries.find(e => e.kind === 'setting')?.file_path).toBe('screenplay/setting/stakeholders.md')
+  })
+
+  test('skips symlinked scenes, markdown and avatars', () => {
+    const r = mkdtempSync(join(tmpdir(), 'spd-screenplay-link-'))
+    try {
+      const secret = join(r, 'outside.txt')
+      writeFileSync(secret, 'Feature: Stolen\n  Scenario: Leak\n    When it leaks')
+      const dir = join(r, 'screenplay')
+      mkdirSync(join(dir, 'features'), { recursive: true })
+      mkdirSync(join(dir, 'personae', 'ann-pixel'), { recursive: true })
+      mkdirSync(join(dir, 'setting'), { recursive: true })
+      writeFileSync(join(dir, 'features', 'real.feature'), 'Feature: Real\n  Scenario: Fine\n    When ok')
+      symlinkSync(secret, join(dir, 'features', 'link.feature'))
+      writeFileSync(join(dir, 'personae', 'ann-pixel', 'account_settings.md'), '---\nname: Ann\n---\nAnn.')
+      symlinkSync(secret, join(dir, 'personae', 'ann-pixel', 'avatar.svg'))
+      symlinkSync(secret, join(dir, 'setting', 'linked.md'))
+      const entries = collectCastEntries(dir)
+      expect(entries.filter(e => e.kind === 'scene').map(e => e.name)).toEqual(['Real'])
+      expect(entries.filter(e => e.kind === 'setting')).toEqual([])
+      expect(entries.find(e => e.kind === 'persona')!.avatar_path).toBeUndefined()
+    } finally { rmSync(r, { recursive: true, force: true }) }
   })
 })

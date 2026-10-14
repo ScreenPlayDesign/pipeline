@@ -81,6 +81,7 @@ export async function postRehearsal(
 ): Promise<{ verdict: 'passed' | 'failed' | 'error'; description: string }> {
   const root = deps.cwd ?? projectRoot(env)
   const fetchFn = deps.fetchFn ?? fetch
+  // The SPD_API_TOKEN fallback is for local runs only; the workflow never passes it.
   const token = env.SPD_REHEARSAL_TOKEN || env.SPD_API_TOKEN, apiUrl = env.SPD_API_URL?.replace(/\/$/, ''), slug = env.SPD_PROJECT_SLUG
   const sha = env.GITHUB_SHA ?? '', runKey = env.GITHUB_RUN_ID ?? new Date().toISOString().replace(/[:.]/g, '-')
   const evidenceRoots = [join(root, 'review'), join(root, 'screenplay')]
@@ -138,6 +139,9 @@ export async function postRehearsal(
   }
   const result = { verdict: (verdict?.verdict ?? 'error') as 'passed' | 'failed' | 'error', description }
 
+  if (!token) {
+    console.log('::warning::SPD_REHEARSAL_TOKEN is not set — the rehearsal was not posted to the dashboard (run spd ci setup)')
+  }
   if (!token || !apiUrl || !slug) {
     console.warn('SPD_REHEARSAL_TOKEN, SPD_API_URL or SPD_PROJECT_SLUG missing — not posting to the dashboard')
     return result
