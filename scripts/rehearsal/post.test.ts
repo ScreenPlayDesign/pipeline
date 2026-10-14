@@ -197,6 +197,14 @@ for (const outcome of [undefined, '']) {
   })
 }
 
+test('a failed cast reset posts an error that says so, without reading any report', async () => {
+  const { calls, fetchFn } = stub(ok)
+  const r = await postRehearsal({ ...env, WAITED: 'success', RESET_RESULT: 'failure', PLAYWRIGHT_OUTCOME: '' }, { fetchFn, cwd: project() })
+  expect(r).toEqual({ verdict: 'error', description: 'The cast reset on staging failed — see the run log' })
+  const body = calls.find(c => c.url.endsWith('/test-report'))!.body
+  expect(body).toMatchObject({ status: 'failed', verdict: 'error', scenarios: [] })
+})
+
 for (const outcome of ['skipped', 'cancelled']) {
   test(`Playwright ${outcome} is an error even when an old results.json is present`, async () => {
     const { calls, fetchFn } = stub(ok)

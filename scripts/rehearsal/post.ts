@@ -128,7 +128,9 @@ export async function postRehearsal(
   // Playwright skipped or cancelled: whatever results.json exists is not this run's.
   if (notPerformed || (env.PLAYWRIGHT_OUTCOME && env.PLAYWRIGHT_OUTCOME !== 'success' && env.PLAYWRIGHT_OUTCOME !== 'failure')) {
     verdict = null; outcomes = []; tests = []
-    description = 'Playwright did not run — see the run log'
+    description = notPerformed && env.RESET_RESULT === 'failure'
+      ? 'The cast reset on staging failed — see the run log'
+      : 'Playwright did not run — see the run log'
   }
   if (neverServed) {
     verdict = null; outcomes = []; tests = []
