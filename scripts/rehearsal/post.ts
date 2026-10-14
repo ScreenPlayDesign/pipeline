@@ -5,6 +5,8 @@
 import { existsSync, readFileSync, statSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { basename, extname, join } from 'node:path'
+import { projectRoot } from './config.ts'
+import { insideAny } from './paths.ts'
 import { collectCastEntries } from './screenplay.ts'
 import { finalResult, runTestsFrom, slugify, splitKeyword, stripAnsi, type PlaywrightReport, type ReportTest } from './report.ts'
 import { inventoryFrom, matchScenarios, summaryLine, verdictOf, type ScenarioOutcome, type Verdict } from './verdict.ts'
@@ -77,9 +79,9 @@ export async function postRehearsal(
   env: NodeJS.ProcessEnv = process.env,
   deps: { fetchFn?: typeof fetch; cwd?: string } = {},
 ): Promise<{ verdict: 'passed' | 'failed' | 'error'; description: string }> {
-  const root = deps.cwd ?? process.cwd()
+  const root = deps.cwd ?? projectRoot(env)
   const fetchFn = deps.fetchFn ?? fetch
-  const token = env.SPD_API_TOKEN, apiUrl = env.SPD_API_URL?.replace(/\/$/, ''), slug = env.SPD_PROJECT_SLUG
+  const token = env.SPD_REHEARSAL_TOKEN ?? env.SPD_API_TOKEN, apiUrl = env.SPD_API_URL?.replace(/\/$/, ''), slug = env.SPD_PROJECT_SLUG
   const sha = env.GITHUB_SHA ?? '', runKey = env.GITHUB_RUN_ID ?? new Date().toISOString().replace(/[:.]/g, '-')
   const resultsFile = join(root, 'review', 'results.json')
   const walkDir = join(root, 'review', 'walkthroughs')
@@ -127,13 +129,17 @@ export async function postRehearsal(
   const result = { verdict: (verdict?.verdict ?? 'error') as 'passed' | 'failed' | 'error', description }
 
   if (!token || !apiUrl || !slug) {
-    console.warn('SPD_API_TOKEN, SPD_API_URL or SPD_PROJECT_SLUG missing — not posting to the dashboard')
+    console.warn('SPD_REHEARSAL_TOKEN, SPD_API_URL or SPD_PROJECT_SLUG missing — not posting to the dashboard')
     return result
   }
   const auth = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }
 
   async function upload(localPath: string, remotePath: string, key = runKey): Promise<string | null> {
     if (!localPath || !existsSync(localPath)) return null
+    if (!insideAny([join(root, 'review'), join(root, 'screenplay')], localPath)) {
+      console.warn(`  refused evidence outside review/ or screenplay/: ${remotePath}`)
+      return null
+    }
     const size = statSync(localPath).size
     if (size === 0 || size > 40 * 1024 * 1024) return null
     try {
@@ -209,7 +215,7 @@ export async function postRehearsal(
             step_status: step.status, actor_id: fr.actor_id, actor_name: actor?.name ?? fr.actor_id,
             actor_role: actor?.role ?? null, actor_device: actor?.device ?? null,
             is_focus: step.focus_actor_id === fr.actor_id, frame_url: url,
-            content_hash: (() => { try { return createHash('sha256').update(readFileSync(local)).digest('hex') } catch { return null } })(),
+            content_hash: (() => { try { if (!insideAny([join(root, 'review')], local)) return null; return createHash('sha256').update(readFileSync(local)).digest('hex') } catch { return null } })(),
             page_url: fr.url ?? null, width: fr.width, height: fr.height, captured_at: fr.captured_at ?? null,
           })
         }

@@ -15,3 +15,8 @@ export function readProjectConfig(root: string): RehearsalConfig {
   if (!stagingUrl) throw new Error('spd_config.toml has no [env.staging] url')
   return { slug, stagingUrl: stagingUrl.replace(/\/$/, '') }
 }
+
+/** The project checkout. Workflows run pipeline code from outside it and pass it in. */
+export function projectRoot(env: NodeJS.ProcessEnv = process.env): string {
+  return env.PROJECT_ROOT || process.cwd()
+}

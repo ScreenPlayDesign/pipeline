@@ -194,3 +194,23 @@ for (const outcome of ['skipped', 'cancelled']) {
     expect(body).toMatchObject({ status: 'failed', verdict: 'error' })
   })
 }
+
+test('a walkthrough frame pointing outside review/ is not uploaded, and the run still posts', async () => {
+  const root = project()
+  writeFileSync(join(root, 'outside.png'), 'secret')
+  const dir = join(root, 'review', 'walkthroughs', 'kira-shares')
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(join(dir, 'walkthrough.json'), JSON.stringify({
+    actors: [{ id: 'kira', name: 'Kira', role: 'member' }],
+    steps: [{
+      index: 1, title: 'Given Kira is signed in', narration: '', focus_actor_id: 'kira', status: 'passed', error_message: null,
+      frames: [{ actor_id: 'kira', file: '../../../outside.png', url: 'https://x', width: 1, height: 1, captured_at: '', error: null }],
+    }],
+  }))
+  const { calls, fetchFn } = stub(ok)
+  const r = await postRehearsal(env, { fetchFn, cwd: root })
+  expect(r.verdict).toBe('passed')
+  expect(calls.some(c => c.url.endsWith('/upload') && String(c.body.path).includes('outside.png'))).toBe(false)
+  const body = calls.find(c => c.url.endsWith('/test-report'))!.body
+  expect(body.scenarios[0].frames).toEqual([])
+})

@@ -4,14 +4,14 @@
 //   bun cli.ts post     → posts the rehearsal; appends verdict= / description= to $GITHUB_OUTPUT
 //   bun cli.ts pgenv    → prints export lines for STAGING_DB_URL's libpq PG* variables (for eval)
 import { appendFileSync } from 'node:fs'
-import { readProjectConfig } from './config.ts'
+import { projectRoot, readProjectConfig } from './config.ts'
 import { waitForBuild } from './buildInfo.ts'
 import { postRehearsal } from './post.ts'
 import { pgEnvFromUrl, shellExports } from './pgenv.ts'
 
 const cmd = process.argv[2]
 if (cmd === 'config') {
-  const c = readProjectConfig(process.cwd())
+  const c = readProjectConfig(projectRoot())
   console.log(`slug=${c.slug}`)
   console.log(`staging_url=${c.stagingUrl}`)
 } else if (cmd === 'wait') {
