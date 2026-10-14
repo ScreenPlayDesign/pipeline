@@ -68,6 +68,10 @@ on:
         description: 'Old release tag to redeploy (e.g. v2026.07.01.1). Empty = no-op — there is nothing else for this workflow to do on a normal deploy anymore.'
         type: string
         default: ''
+    secrets:
+      PR_BOT_TOKEN:
+        description: 'Token allowed to push to the protected prod branch'
+        required: false
 
 permissions:
   contents: write   # for pushing the rollback commit
@@ -100,7 +104,7 @@ jobs:
     environment: production
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0   # full history so the tag checkout + push below work
           # PR_BOT_TOKEN, not the default token — github-actions[bot] isn't
@@ -121,12 +125,17 @@ jobs:
       # happens to restore old content — and Cloudflare's deploy + github-
       # app's publishRelease() both react to it exactly like any other push.
       - name: Restore rollback tree
+        env:
+          TAG: ${{ inputs.rollback-to-tag }}   # via env, never interpolated into the script
         run: |
+          if ! printf '%s' "$TAG" | grep -Eq '^v[0-9]{4}\.[0-9]{2}\.[0-9]{2}\.[0-9]+$'; then
+            echo "❌ '$TAG' is not a release tag (vYYYY.MM.DD.N)"; exit 1
+          fi
           git fetch --tags --quiet
-          git checkout "${{ inputs.rollback-to-tag }}" -- .
+          git checkout "refs/tags/$TAG" -- .
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add -A
-          git commit -m "revert: roll back prod tree to ${{ inputs.rollback-to-tag }}" --allow-empty
+          git commit -m "revert: roll back prod tree to $TAG" --allow-empty
           git push origin HEAD:prod
-          echo "✓ prod tree restored to ${{ inputs.rollback-to-tag }} as a new forward commit"
+          echo "✓ prod tree restored to $TAG as a new forward commit"

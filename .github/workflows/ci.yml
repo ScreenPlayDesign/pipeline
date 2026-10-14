@@ -27,7 +27,9 @@ name: ci
 # run-ci.yml (or, for simple cases, a ci.yml that's just a trigger + this
 # call) that does nothing but declare its own trigger and its own
 # project-specific inputs, then calls:
-#   uses: ScreenPlayDesign/pipeline/.github/workflows/ci.yml@main
+#   uses: ScreenPlayDesign/pipeline/.github/workflows/ci.yml@<commit sha>
+#   secrets: { SPD_API_TOKEN: ..., STAGING_SUPABASE_URL: ..., STAGING_SUPABASE_PUBLISHABLE_KEY: ... }
+# Pin a commit SHA and pass secrets by name — never @main, never `secrets: inherit`.
 #
 # `vars.*`/`secrets.*` referenced below resolve against whichever repo's
 # workflow run is actually calling this — the CALLER's own variables and
@@ -71,6 +73,20 @@ on:
         description: 'Base URL for the visual gate to test against (a deployed dev/staging/prod preview). Leave blank to let Playwright boot its own local dev server instead.'
         type: string
         default: ''
+    # Named secrets only — callers pass these explicitly instead of
+    # `secrets: inherit`, so this public workflow never sees anything else.
+    secrets:
+      SPD_API_TOKEN:
+        description: 'Per-project CI token (Settings → API tokens → "CI · <project>") for posting results to the SPD dashboard'
+        required: false
+      STAGING_SUPABASE_URL:
+        required: false
+      STAGING_SUPABASE_PUBLISHABLE_KEY:
+        required: false
+
+# Read-only by default; nothing in CI writes to the repo.
+permissions:
+  contents: read
 
 jobs:
   # ── Lane guard — the pipeline's structural rules, enforced as a check ──────
@@ -98,13 +114,14 @@ jobs:
       carries-migration: ${{ steps.diff.outputs.carries }}
       migration-files:   ${{ steps.diff.outputs.files }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
       - name: Check lane diff against the schema rules
         id: diff
+        env:
+          LANE: ${{ github.head_ref }}   # via env, never interpolated into the script
         run: |
-          LANE="${{ github.head_ref }}"
           git fetch origin staging --quiet
           FILES=$(git diff --name-only origin/staging...HEAD -- supabase/migrations/ | tr '\n' ' ' | sed 's/ $//')
           echo "files=$FILES"                                    >> "$GITHUB_OUTPUT"
@@ -130,8 +147,8 @@ jobs:
     timeout-minutes: 8
 
     steps:
-      - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: latest
 
@@ -162,8 +179,8 @@ jobs:
     timeout-minutes: 12
 
     steps:
-      - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: latest
 
@@ -186,21 +203,23 @@ jobs:
         # "Cannot navigate to invalid URL" — confirmed the hard way once this
         # went live for a caller (web-dashboard) that intentionally leaves
         # target-url blank so Playwright boots and points at its own local
-        # dev server instead of a deployed preview.
+        # dev server instead of a deployed preview. (TARGET_URL itself may be
+        # empty; it only feeds the conditional export.)
         run: |
-          if [ -n "${{ inputs.target-url }}" ]; then
-            export BASE_URL="${{ inputs.target-url }}"
+          if [ -n "$TARGET_URL" ]; then
+            export BASE_URL="$TARGET_URL"
           fi
           bun run test
         continue-on-error: true   # capture result even on failure, so the dashboard-post step below still runs
         env:
+          TARGET_URL:             ${{ inputs.target-url }}
           SPD_ALLOW_HOST_DEV:     '1'
           VITE_SUPABASE_URL:      ${{ secrets.STAGING_SUPABASE_URL             || 'https://placeholder.supabase.co' }}
           VITE_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.STAGING_SUPABASE_PUBLISHABLE_KEY || 'placeholder_anon_key' }}
 
       - name: Upload gate evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: playwright-gate-report-${{ github.run_number }}
           path: |
@@ -214,9 +233,11 @@ jobs:
       - name: Detect schema migrations in this diff
         id: schema
         if: always() && github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
         run: |
-          git fetch origin "${{ github.base_ref }}" --quiet || true
-          FILES=$(git diff --name-only "origin/${{ github.base_ref }}"...HEAD -- supabase/migrations/ 2>/dev/null | tr '\n' ' ' | sed 's/ $//')
+          git fetch origin "$BASE_REF" --quiet || true
+          FILES=$(git diff --name-only "origin/$BASE_REF"...HEAD -- supabase/migrations/ 2>/dev/null | tr '\n' ' ' | sed 's/ $//')
           echo "files=$FILES"                                    >> "$GITHUB_OUTPUT"
           echo "carries=$([ -n "$FILES" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
 

@@ -55,13 +55,22 @@ plus a `uses:` call back here:
 on:
   push:
     branches: [prod]
+permissions:
+  contents: write
 jobs:
   deploy:
-    uses: ScreenPlayDesign/pipeline/.github/workflows/deploy-prod.yml@main
-    secrets: inherit
+    uses: ScreenPlayDesign/pipeline/.github/workflows/deploy-prod.yml@<commit sha> # main as of YYYY-MM-DD
+    secrets:
+      PR_BOT_TOKEN: ${{ secrets.PR_BOT_TOKEN }}
 ```
 
-`vars`, `secrets` (via `secrets: inherit`), and `github.event.*` all
+Pass each secret by name — never `secrets: inherit`. This repo is public:
+with `inherit`, one bad change here would hand every caller's secrets to
+it. Each workflow declares the secrets it accepts under `workflow_call:`
+(`ci.yml`: `SPD_API_TOKEN`, `STAGING_SUPABASE_URL`,
+`STAGING_SUPABASE_PUBLISHABLE_KEY`; `deploy-prod.yml`: `PR_BOT_TOKEN`).
+`SPD_API_TOKEN` is a per-project CI token (dashboard Settings → API tokens
+→ "CI · <project>"), never a personal one. `vars` and `github.event.*`
 resolve against the **calling** repo's own run, not this one.
 `deploy-prod.yml` no longer reads any Cloudflare-related variable or
 secret at all — see the Workflows table below.
@@ -91,8 +100,8 @@ workflow involved.
 
 ## Versioning
 
-Consuming repos pin `@main`. There's no separate stable/dev split like
-foundation-template has (its own `dev`/`prod` branches gate *its own*
-deploy) — this repo has no app to deploy, so a merge to `main` is the
-release. Keep changes here small and reviewed; every project depending on
-`@main` picks up a change the moment it lands.
+Consuming repos pin a full commit SHA of `main`, not `@main` (audit
+2026-10-14, H3): a push here must not reach every project's CI unreviewed.
+Updating a project to a newer pipeline is a one-line change to that pin.
+Third-party actions inside these workflows are pinned by SHA too, with the
+release tag in a comment.
