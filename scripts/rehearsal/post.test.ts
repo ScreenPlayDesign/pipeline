@@ -51,23 +51,31 @@ afterEach(() => {
   while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true })
 })
 
-function project(opts: { report?: 'pass' | 'fixme' | 'none' | 'garbage' } = {}): string {
+function project(opts: { report?: 'pass' | 'fixme' | 'none' | 'garbage' | 'laterFailure' } = {}): string {
   const root = mkdtempSync(join(tmpdir(), 'rehearsal-post-'))
   dirs.push(root)
   mkdirSync(join(root, 'screenplay', 'features'), { recursive: true })
-  writeFileSync(join(root, 'screenplay', 'features', 'a.feature'),
-    'Feature: A\n  Scenario: Kira shares\n    Given Kira is signed in\n    When she shares\n')
   const kind = opts.report ?? 'pass'
+  writeFileSync(join(root, 'screenplay', 'features', 'a.feature'), kind === 'laterFailure'
+    ? 'Feature: A\n  Scenario: Kira shares\n    Given Kira is signed in\n    When she shares\n'
+      + '  @later\n  Scenario: Kira exports\n    Given Kira is signed in\n'
+    : 'Feature: A\n  Scenario: Kira shares\n    Given Kira is signed in\n    When she shares\n')
   if (kind !== 'none') {
     mkdirSync(join(root, 'review'), { recursive: true })
     const annotations = kind === 'fixme' ? [{ type: 'fixme' }] : []
-    const report = {
-      stats: { expected: 1, unexpected: 0, skipped: 0 },
-      suites: [{ title: 'a.spec.ts', file: 'a.spec.ts', specs: [{
-        title: 'Kira shares', ok: true,
-        tests: [{ annotations, results: [{ status: kind === 'fixme' ? 'skipped' : 'passed', duration: 5, attachments: [] }] }],
-      }] }],
+    const shares = {
+      title: 'Kira shares', ok: true,
+      tests: [{ annotations, results: [{ status: kind === 'fixme' ? 'skipped' : 'passed', duration: 5, attachments: [] }] }],
     }
+    const exports = {
+      title: 'Kira exports @later', ok: false,
+      tests: [{ results: [{ status: 'failed', duration: 3, error: { message: 'boom' }, attachments: [] }] }],
+    }
+    const report = kind === 'laterFailure'
+      ? { stats: { expected: 1, unexpected: 1, skipped: 0 },
+          suites: [{ title: 'a.spec.ts', file: 'a.spec.ts', specs: [shares, exports] }] }
+      : { stats: { expected: 1, unexpected: 0, skipped: 0 },
+          suites: [{ title: 'a.spec.ts', file: 'a.spec.ts', specs: [shares] }] }
     writeFileSync(join(root, 'review', 'results.json'), kind === 'garbage' ? '{not json' : JSON.stringify(report))
   }
   return root
@@ -138,4 +146,20 @@ test('a fixme test is posted as not performed with the scene steps and a reason'
     { index: 1, keyword: 'Given', text: 'Kira is signed in', status: 'skipped', error: null, duration_ms: null, focus_actor: null },
     { index: 2, keyword: 'When', text: 'she shares', status: 'skipped', error: null, duration_ms: null, focus_actor: null },
   ])
+})
+
+test('Playwright crashed after recording only passes: the verdict is error, not passed', async () => {
+  const { calls, fetchFn } = stub(ok)
+  const r = await postRehearsal({ ...env, PLAYWRIGHT_OUTCOME: 'failure' }, { fetchFn, cwd: project() })
+  expect(r).toEqual({ verdict: 'error', description: 'Playwright exited with an error but recorded no failing scene — see the run log' })
+  const body = calls.find(c => c.url.endsWith('/test-report'))!.body
+  expect(body).toMatchObject({ status: 'failed', verdict: 'error' })
+})
+
+test('a failing @later scene makes Playwright exit non-zero but does not block the verdict', async () => {
+  const { calls, fetchFn } = stub(ok)
+  const r = await postRehearsal({ ...env, PLAYWRIGHT_OUTCOME: 'failure' }, { fetchFn, cwd: project({ report: 'laterFailure' }) })
+  expect(r.verdict).toBe('passed')
+  const body = calls.find(c => c.url.endsWith('/test-report'))!.body
+  expect(body).toMatchObject({ status: 'passed', verdict: 'passed', later_total: 1 })
 })

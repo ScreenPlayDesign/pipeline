@@ -36,7 +36,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
-      GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
       SHA: ${{ github.sha }}
     steps:
@@ -56,6 +55,7 @@ jobs:
 
       - name: Mark the rehearsal pending
         env:
+          GH_TOKEN: ${{ github.token }}
           TARGET: https://screenplaydesign.com/pr/${{ steps.cfg.outputs.slug }}/screenplay
         run: |
           gh api "repos/$REPO/statuses/$SHA" -f state=pending -f context='screenplay / dress rehearsal' \
@@ -82,7 +82,9 @@ jobs:
             exit 0
           fi
           sudo apt-get install -y -qq postgresql-client >/dev/null
-          psql "$STAGING_DB_URL" -v ON_ERROR_STOP=1 -q -f supabase/testing/reset.sql
+          PGENV="$(bun .spd-pipeline/scripts/rehearsal/cli.ts pgenv)"
+          eval "$PGENV"
+          psql -v ON_ERROR_STOP=1 -q -f supabase/testing/reset.sql
 
       - name: Perform the scenes
         id: playwright
@@ -114,6 +116,7 @@ jobs:
         id: post
         if: always() && steps.cfg.outcome == 'success' && steps.wait.outcome == 'success'
         env:
+          PLAYWRIGHT_OUTCOME: ${{ steps.playwright.outcome }}
           SPD_API_TOKEN: ${{ secrets.SPD_API_TOKEN }}
           SPD_API_URL: ${{ inputs.api-url }}
           SPD_PROJECT_SLUG: ${{ steps.cfg.outputs.slug }}
@@ -123,6 +126,7 @@ jobs:
       - name: Set the gate's commit status
         if: always()
         env:
+          GH_TOKEN: ${{ github.token }}
           VERDICT: ${{ steps.post.outputs.verdict }}
           DESC: ${{ steps.post.outputs.description }}
           TARGET: https://screenplaydesign.com/pr/${{ steps.cfg.outputs.slug }}/screenplay

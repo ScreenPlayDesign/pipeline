@@ -61,7 +61,9 @@ jobs:
         run: |
           if [ -z "$STAGING_DB_URL" ] || [ ! -f supabase/testing/reset.sql ]; then exit 0; fi
           sudo apt-get install -y -qq postgresql-client >/dev/null
-          psql "$STAGING_DB_URL" -v ON_ERROR_STOP=1 -q -f supabase/testing/reset.sql
+          PGENV="$(bun .spd-pipeline/scripts/rehearsal/cli.ts pgenv)"
+          eval "$PGENV"
+          psql -v ON_ERROR_STOP=1 -q -f supabase/testing/reset.sql
       - name: Render the scenes, writing changed baselines
         continue-on-error: true
         env:
@@ -74,7 +76,7 @@ jobs:
         run: bunx playwright test --retries=0 --workers="$(nproc)" --update-snapshots=changed --reporter=line
       - name: Commit the Linux baselines to the design lane
         run: |
-          git ls-files --others --modified -- '*-linux.png' > /tmp/baselines.txt
+          git ls-files --others --exclude-standard --modified -- '*-linux.png' > /tmp/baselines.txt
           if [ ! -s /tmp/baselines.txt ]; then echo "No new or changed Linux baselines."; exit 0; fi
           git config user.name  "spd-pipeline"
           git config user.email "spd-pipeline@users.noreply.github.com"

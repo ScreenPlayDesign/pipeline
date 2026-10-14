@@ -105,6 +105,13 @@ export async function postRehearsal(
     description = summaryLine(verdict)
     for (const o of m.orphans) console.warn(`  test with no scenario: ${o.featureFile} :: ${o.title}`)
   }
+  // Playwright exits non-zero for a failing @later scene too, so only a
+  // non-zero exit with no failing test at all means the run itself crashed
+  // (its partial report then looks like a pass).
+  if (env.PLAYWRIGHT_OUTCOME === 'failure' && report && (report.stats?.unexpected ?? 0) === 0) {
+    verdict = null
+    description = 'Playwright exited with an error but recorded no failing scene — see the run log'
+  }
   const result = { verdict: (verdict?.verdict ?? 'error') as 'passed' | 'failed' | 'error', description }
 
   if (!token || !apiUrl || !slug) {
