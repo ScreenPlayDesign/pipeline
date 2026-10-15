@@ -53,7 +53,7 @@ afterEach(() => {
   while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true })
 })
 
-function project(opts: { report?: 'pass' | 'fixme' | 'none' | 'garbage' | 'laterFailure' } = {}): string {
+function project(opts: { report?: 'pass' | 'fixme' | 'none' | 'garbage' | 'laterFailure' | 'requiredFailure' } = {}): string {
   const root = mkdtempSync(join(tmpdir(), 'rehearsal-post-'))
   dirs.push(root)
   mkdirSync(join(root, 'screenplay', 'features'), { recursive: true })
@@ -67,7 +67,7 @@ function project(opts: { report?: 'pass' | 'fixme' | 'none' | 'garbage' | 'later
     const annotations = kind === 'fixme' ? [{ type: 'fixme' }] : []
     const shares = {
       title: 'Kira shares', ok: true,
-      tests: [{ annotations, results: [{ status: kind === 'fixme' ? 'skipped' : 'passed', duration: 5, attachments: [] }] }],
+      tests: [{ annotations, results: [{ status: kind === 'fixme' ? 'skipped' : kind === 'requiredFailure' ? 'failed' : 'passed', duration: 5, attachments: [] }] }],
     }
     const exports = {
       title: 'Kira exports @later', ok: false,
@@ -76,7 +76,7 @@ function project(opts: { report?: 'pass' | 'fixme' | 'none' | 'garbage' | 'later
     const report = kind === 'laterFailure'
       ? { stats: { expected: 1, unexpected: 1, skipped: 0 },
           suites: [{ title: 'a.spec.ts', file: 'a.spec.ts', specs: [shares, exports] }] }
-      : { stats: { expected: 1, unexpected: 0, skipped: 0 },
+      : { stats: { expected: kind === 'requiredFailure' ? 0 : 1, unexpected: kind === 'requiredFailure' ? 1 : 0, skipped: 0 },
           suites: [{ title: 'a.spec.ts', file: 'a.spec.ts', specs: [shares] }] }
     writeFileSync(join(root, 'review', 'results.json'), kind === 'garbage' ? '{not json' : JSON.stringify(report))
   }
@@ -422,8 +422,20 @@ test('on a 2xx the dashboard\'s own status line wins over the local one', async 
   const { fetchFn } = stub(url => url.endsWith('/test-report')
     ? new Response(JSON.stringify({ ok: true, verdict: 'passed', description }), { status: 201 })
     : ok())
-  const r = await postRehearsal(env, { fetchFn, cwd: project() })
+  const local = await postRehearsal({ ...env, PLAYWRIGHT_OUTCOME: 'failure' }, { fetchFn: stub(ok).fetchFn, cwd: project({ report: 'requiredFailure' }) })
+  expect(local.verdict).toBe('failed')
+  const r = await postRehearsal({ ...env, PLAYWRIGHT_OUTCOME: 'failure' }, { fetchFn, cwd: project({ report: 'requiredFailure' }) })
   expect(r).toEqual({ verdict: 'passed', description })
+})
+
+test('a server error verdict keeps the local reason, not the server count line', async () => {
+  const { fetchFn } = stub(url => url.endsWith('/test-report')
+    ? new Response(JSON.stringify({ ok: true, verdict: 'error', description: 'no required scenes found' }), { status: 201 })
+    : ok())
+  const r = await postRehearsal(env, { fetchFn, cwd: project({ report: 'none' }) })
+  expect(r.verdict).toBe('error')
+  expect(r.description).not.toBe('no required scenes found')
+  expect(r.description.length).toBeGreaterThan(0)
 })
 
 // A failed "Kira shares" with Playwright's visual-comparison images.

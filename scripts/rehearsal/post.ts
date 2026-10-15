@@ -332,7 +332,7 @@ export async function postRehearsal(
       // The server recomputes the verdict from what it stored; it decides.
       if (stored.verdict === 'passed' || stored.verdict === 'failed' || stored.verdict === 'error') {
         // The server recomputes the verdict and its line from what it stored (and the canonical set).
-        if (typeof stored.description === 'string' && stored.description) result.description = stored.description
+        if (stored.verdict !== 'error' && typeof stored.description === 'string' && stored.description) result.description = stored.description
         else if (stored.verdict !== result.verdict) result.description = `The dashboard counted this rehearsal as ${stored.verdict} — see the run log`
         result.verdict = stored.verdict
       }
