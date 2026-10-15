@@ -45,7 +45,7 @@ jobs:
   start:
     name: Wait for staging
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 35
     permissions:
       contents: read
       statuses: write
@@ -87,14 +87,16 @@ jobs:
         run: |
           gh api "repos/$REPO/statuses/$SHA" -f state=pending -f context="$CONTEXT" \
             -f description='Waiting for staging to deploy' -f target_url="$TARGET" >/dev/null
-      - name: Wait until staging serves this commit
+      - name: Wait until staging serves this commit and its migrations are applied
         id: wait
         env:
           STAGING_URL: ${{ steps.cfg.outputs.staging_url }}
           GITHUB_SHA: ${{ github.sha }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           cd "$RUNNER_TEMP/spd-pipeline"
           bun --no-env-file scripts/rehearsal/cli.ts wait
+          bun --no-env-file scripts/rehearsal/cli.ts wait-migrations
 
   reset:
     name: Reset the cast on staging

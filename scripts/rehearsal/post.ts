@@ -19,12 +19,16 @@ interface FrameRow {
   is_focus: boolean; frame_url: string; content_hash: string | null; page_url: string | null
   width: number | null; height: number | null; captured_at: string | null
 }
+export interface ComparisonRow {
+  name: string; step_index: number | null; actor: string | null
+  expected_url: string; actual_url: string; diff_url: string
+}
 export interface ScenarioRow {
   feature_file: string; scenario_name: string; scenario_tags: string[]
   status: 'passed' | 'failed' | 'skipped' | 'not_performed'
   required: boolean; duration_ms: number | null; error_message: string | null
   screenshot_url: string | null; video_url: string | null; diff_url: string | null
-  sort_order: number; frames: FrameRow[]; steps: StepRow[]
+  sort_order: number; frames: FrameRow[]; steps: StepRow[]; comparisons: ComparisonRow[]
 }
 interface WalkthroughManifest {
   actors: Array<{ id: string; name: string; role: string; device?: string }>
@@ -51,9 +55,31 @@ export function notPerformedRow(o: ScenarioOutcome, sortOrder: number): Scenario
     feature_file: o.scenario.featureFile, scenario_name: o.scenario.name, scenario_tags: o.scenario.tags,
     status: 'not_performed', required: o.scenario.required, duration_ms: null,
     error_message: 'This scene has no test yet',
-    screenshot_url: null, video_url: null, diff_url: null, sort_order: sortOrder, frames: [],
+    screenshot_url: null, video_url: null, diff_url: null, sort_order: sortOrder, frames: [], comparisons: [],
     steps: skippedSteps(o),
   }
+}
+
+const COMPARISON_SUFFIX = /-(expected|actual|diff)\.png$/
+
+/** Playwright's visual-comparison images grouped by base name (the file name without the suffix). */
+export function groupComparisonImages(
+  atts: Array<{ name?: string; path?: string }>,
+): Array<{ name: string; files: Partial<Record<'expected' | 'actual' | 'diff', string>> }> {
+  const groups = new Map<string, Partial<Record<'expected' | 'actual' | 'diff', string>>>()
+  for (const a of atts) {
+    if (!a.path) continue
+    const m = COMPARISON_SUFFIX.exec(basename(a.path))
+    if (!m) continue
+    const name = basename(a.path).slice(0, m.index)
+    groups.set(name, { ...groups.get(name), [m[1]]: a.path })
+  }
+  return [...groups].map(([name, files]) => ({ name, files }))
+}
+
+/** The cast actor a comparison is about: a '-'-separated segment of its name that is an actor id. */
+export function comparisonActor(name: string, actorIds: Set<string>): string | null {
+  return name.toLowerCase().split('-').find(seg => actorIds.has(seg)) ?? null
 }
 
 export function runPayload(a: {
@@ -145,7 +171,8 @@ export async function postRehearsal(
   }
   if (!token || !apiUrl || !slug) {
     console.warn('SPD_REHEARSAL_TOKEN, SPD_API_URL or SPD_PROJECT_SLUG missing — not posting to the dashboard')
-    return result
+    // A gate that posted nothing must not go green on the local verdict.
+    return { verdict: 'error', description: 'The rehearsal was not posted to the dashboard — run spd ci setup' }
   }
   const auth = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }
 
@@ -192,6 +219,7 @@ export async function postRehearsal(
   const scenarioOf = new Map<ReportTest, ScenarioOutcome>()
   for (const o of outcomes) for (const t of o.tests) scenarioOf.set(t as ReportTest, o)
   const rows: ScenarioRow[] = []
+  const castIds = new Set(entries.filter(e => e.kind === 'persona').flatMap(e => e.actor_key ? [e.actor_key.toLowerCase()] : []))
   for (const t of tests) {
     const o = scenarioOf.get(t)
     const r = finalResult(t.spec)
@@ -209,6 +237,21 @@ export async function postRehearsal(
       if (shot?.path && !unusedPage) screenshot = await upload(shot.path, `${sSlug}/screenshot${extname(shot.path)}`)
       if (vid?.path && !unusedPage) video = await upload(vid.path, `${sSlug}/video${extname(vid.path)}`)
       if (dif?.path) diff = await upload(dif.path, `${sSlug}/diff.png`)
+    }
+    const comparisons: ComparisonRow[] = []
+    if (status === 'failed') {
+      for (const g of groupComparisonImages(atts)) {
+        const { expected, actual, diff: dif } = g.files
+        if (!expected || !actual || !dif) continue
+        const [expected_url, actual_url, diff_url] = [
+          await upload(expected, `${sSlug}/comparison/${g.name}-expected.png`),
+          await upload(actual, `${sSlug}/comparison/${g.name}-actual.png`),
+          await upload(dif, `${sSlug}/comparison/${g.name}-diff.png`),
+        ]
+        if (!expected_url || !actual_url || !diff_url) continue
+        // step_index stays null: Playwright's image names do not say which step they belong to.
+        comparisons.push({ name: g.name, step_index: null, actor: comparisonActor(g.name, castIds), expected_url, actual_url, diff_url })
+      }
     }
     const frames: FrameRow[] = []
     let steps: StepRow[] = []
@@ -256,7 +299,7 @@ export async function postRehearsal(
       error_message: fixmeScene ? "This scene's test is marked fixme"
         : r?.error?.message ? stripAnsi(r.error.message).split('\n')[0] : null,
       screenshot_url: screenshot, video_url: video, diff_url: diff,
-      sort_order: rows.length, frames, steps: fixmeScene ? skippedSteps(fixmeScene) : steps,
+      sort_order: rows.length, frames, comparisons, steps: fixmeScene ? skippedSteps(fixmeScene) : steps,
     })
   }
   for (const o of outcomes.filter(x => x.tests.length === 0)) rows.push(notPerformedRow(o, rows.length))

@@ -17,7 +17,7 @@ test('a scenario with no test is posted as not performed, with its Gherkin', () 
   expect(notPerformedRow(outcome, 7)).toEqual({
     feature_file: 'screenplay/features/map.feature', scenario_name: 'Kira shares her map', scenario_tags: ['@cast'],
     status: 'not_performed', required: true, duration_ms: null, error_message: 'This scene has no test yet',
-    screenshot_url: null, video_url: null, diff_url: null, sort_order: 7, frames: [],
+    screenshot_url: null, video_url: null, diff_url: null, sort_order: 7, frames: [], comparisons: [],
     steps: [
       { index: 1, keyword: 'Given', text: 'Kira is signed in', status: 'skipped', error: null, duration_ms: null, focus_actor: null },
       { index: 2, keyword: 'When', text: 'she shares', status: 'skipped', error: null, duration_ms: null, focus_actor: null },
@@ -95,11 +95,22 @@ function stub(respond: (url: string) => Response | Promise<Response>) {
 }
 const ok = () => new Response('{}', { status: 201 })
 
-test('without a token nothing is posted but the verdict is still returned', async () => {
+test('without a token nothing is posted and the verdict is an error that says to run spd ci setup', async () => {
   const { calls, fetchFn } = stub(ok)
   const r = await postRehearsal({ ...env, SPD_API_TOKEN: undefined }, { fetchFn, cwd: project() })
-  expect(r.verdict).toBe('passed')
+  expect(r.verdict).toBe('error')
+  expect(r.description).toBe('The rehearsal was not posted to the dashboard — run spd ci setup')
   expect(calls).toEqual([])
+})
+
+test('a missing api url or project slug is the same error', async () => {
+  for (const drop of ['SPD_API_URL', 'SPD_PROJECT_SLUG'] as const) {
+    const { calls, fetchFn } = stub(ok)
+    const r = await postRehearsal({ ...env, [drop]: undefined }, { fetchFn, cwd: project() })
+    expect(r.verdict).toBe('error')
+    expect(r.description).toBe('The rehearsal was not posted to the dashboard — run spd ci setup')
+    expect(calls).toEqual([])
+  }
 })
 
 test('a network error is logged, fails the run, and still returns the verdict', async () => {
@@ -287,7 +298,7 @@ test('a results.json that is a symlink to a file outside review/ is treated as n
   expect(r.verdict).toBe('error')
 })
 
-test('with no posting token it prints a warning annotation and still returns the verdict', async () => {
+test('with no posting token it prints a warning annotation and returns an error verdict', async () => {
   const logs: string[] = []
   const origLog = console.log, origWarn = console.warn
   console.log = (...a: unknown[]) => { logs.push(a.join(' ')) }
@@ -296,7 +307,7 @@ test('with no posting token it prints a warning annotation and still returns the
     const { calls, fetchFn } = stub(ok)
     const { SPD_API_TOKEN: _drop, ...noToken } = env
     const r = await postRehearsal(noToken, { fetchFn, cwd: project() })
-    expect(r.verdict).toBe('passed')
+    expect(r.verdict).toBe('error')
     expect(calls).toEqual([])
   } finally { console.log = origLog; console.warn = origWarn }
   expect(logs).toContain('::warning::SPD_REHEARSAL_TOKEN is not set — the rehearsal was not posted to the dashboard (run spd ci setup)')
@@ -364,4 +375,73 @@ test('a run the dashboard refused as an error is an error at the gate too', asyn
   expect(r.verdict).toBe('error')
   expect(r.description).toContain('permission denied')
   expect(process.exitCode).toBe(1)
+})
+
+// A failed "Kira shares" with Playwright's visual-comparison images.
+function comparisonScene(files: string[], status: 'failed' | 'passed' = 'failed'): string {
+  const root = project()
+  mkdirSync(join(root, 'review', 'shots'), { recursive: true })
+  const atts = files.map(f => {
+    writeFileSync(join(root, 'review', 'shots', f), png([[[10, 20, 30], [40, 50, 60]]]))
+    return { name: f, path: join(root, 'review', 'shots', f), contentType: 'image/png' }
+  })
+  writeFileSync(join(root, 'review', 'results.json'), JSON.stringify({
+    stats: { expected: 0, unexpected: status === 'failed' ? 1 : 0, skipped: 0 },
+    suites: [{ title: 'a.spec.ts', file: 'a.spec.ts', specs: [{
+      title: 'Kira shares', ok: status === 'passed',
+      tests: [{ annotations: [], results: [{ status, duration: 5, error: status === 'failed' ? { message: 'pixels differ' } : undefined, attachments: atts }] }],
+    }] }],
+  }))
+  return root
+}
+const uploadsAsUrls = (url: string) => url.endsWith('/upload')
+  ? new Response(JSON.stringify({ url: 'https://files.test/x' }), { status: 201 }) : ok()
+
+test('a failed scene posts its expected, actual and diff images as one comparison', async () => {
+  const root = comparisonScene(['kira-home-expected.png', 'kira-home-actual.png', 'kira-home-diff.png'])
+  const { calls, fetchFn } = stub(url => url.endsWith('/upload')
+    ? new Response(JSON.stringify({ url: 'https://files.test/' + calls.filter(c => c.url.endsWith('/upload')).length }), { status: 201 }) : ok())
+  await postRehearsal(env, { fetchFn, cwd: root })
+  const comps = calls.find(c => c.url.endsWith('/test-report'))!.body.scenarios[0].comparisons
+  expect(comps).toHaveLength(1)
+  expect(comps[0]).toMatchObject({ name: 'kira-home', step_index: null })
+  for (const k of ['expected_url', 'actual_url', 'diff_url']) expect(comps[0][k]).toMatch(/^https:\/\/files\.test\//)
+  expect(new Set([comps[0].expected_url, comps[0].actual_url, comps[0].diff_url]).size).toBe(3)
+})
+
+test('the comparison actor is the base-name segment that is a cast actor id', async () => {
+  const root = comparisonScene(['three-actors-kira-expected.png', 'three-actors-kira-actual.png', 'three-actors-kira-diff.png'])
+  mkdirSync(join(root, 'screenplay', 'personae', 'kira-pixel'), { recursive: true })
+  writeFileSync(join(root, 'screenplay', 'personae', 'kira-pixel', 'account_settings.md'), '---\nname: Kira\nrole: host\n---\nKira hosts.')
+  const { calls, fetchFn } = stub(uploadsAsUrls)
+  await postRehearsal(env, { fetchFn, cwd: root })
+  expect(calls.find(c => c.url.endsWith('/test-report'))!.body.scenarios[0].comparisons[0].actor).toBe('kira')
+})
+
+test('a comparison missing one of its three images is not posted', async () => {
+  const root = comparisonScene(['kira-home-expected.png', 'kira-home-actual.png'])
+  const { calls, fetchFn } = stub(uploadsAsUrls)
+  await postRehearsal(env, { fetchFn, cwd: root })
+  expect(calls.find(c => c.url.endsWith('/test-report'))!.body.scenarios[0].comparisons).toEqual([])
+})
+
+test('a passing scene posts no comparisons and uploads none', async () => {
+  const root = comparisonScene(['kira-home-expected.png', 'kira-home-actual.png', 'kira-home-diff.png'], 'passed')
+  const { calls, fetchFn } = stub(uploadsAsUrls)
+  await postRehearsal(env, { fetchFn, cwd: root })
+  expect(calls.find(c => c.url.endsWith('/test-report'))!.body.scenarios[0].comparisons).toEqual([])
+})
+
+test('comparison images outside review/ are not uploaded', async () => {
+  const root = comparisonScene([])
+  const out = ['kira-home-expected.png', 'kira-home-actual.png', 'kira-home-diff.png'].map(f => {
+    writeFileSync(join(root, f), 'secret'); return { name: f, path: join(root, f), contentType: 'image/png' }
+  })
+  const rep = JSON.parse(require('node:fs').readFileSync(join(root, 'review', 'results.json'), 'utf8'))
+  rep.suites[0].specs[0].tests[0].results[0].attachments = out
+  writeFileSync(join(root, 'review', 'results.json'), JSON.stringify(rep))
+  const { calls, fetchFn } = stub(uploadsAsUrls)
+  await postRehearsal(env, { fetchFn, cwd: root })
+  expect(calls.some(c => c.url.endsWith('/upload'))).toBe(false)
+  expect(calls.find(c => c.url.endsWith('/test-report'))!.body.scenarios[0].comparisons).toEqual([])
 })
