@@ -7,6 +7,7 @@ import { createHash } from 'node:crypto'
 import { basename, extname, join } from 'node:path'
 import { projectRoot } from './config.ts'
 import { insideAny } from './paths.ts'
+import { isBlankPng } from './png.ts'
 import { collectCastEntries } from './screenplay.ts'
 import { finalResult, runTestsFrom, slugify, splitKeyword, stripAnsi, type PlaywrightReport, type ReportTest } from './report.ts'
 import { inventoryFrom, matchScenarios, summaryLine, verdictOf, type ScenarioOutcome, type Verdict } from './verdict.ts'
@@ -187,6 +188,7 @@ export async function postRehearsal(
   }
 
   // 2. Every scenario: performed ones with their evidence, the rest as not performed.
+  let framesSent = 0
   const scenarioOf = new Map<ReportTest, ScenarioOutcome>()
   for (const o of outcomes) for (const t of o.tests) scenarioOf.set(t as ReportTest, o)
   const rows: ScenarioRow[] = []
@@ -201,8 +203,11 @@ export async function postRehearsal(
       const shot = atts.find(a => a.name === 'screenshot' && a.path) ?? atts.find(a => a.contentType?.startsWith('image/') && a.path && !/-(expected|diff)\./.test(a.path))
       const vid = atts.find(a => a.name === 'video' && a.path)
       const dif = atts.find(a => a.path && /-diff\.png$/.test(a.path))
-      if (shot?.path) screenshot = await upload(shot.path, `${sSlug}/screenshot${extname(shot.path)}`)
-      if (vid?.path) video = await upload(vid.path, `${sSlug}/video${extname(vid.path)}`)
+      // A scene performed on its actors' own browsers leaves the test's own
+      // page blank; its screenshot and video would show Pete an empty screen.
+      const unusedPage = !!shot?.path && insideAny(evidenceRoots, shot.path) && isBlankPng(shot.path)
+      if (shot?.path && !unusedPage) screenshot = await upload(shot.path, `${sSlug}/screenshot${extname(shot.path)}`)
+      if (vid?.path && !unusedPage) video = await upload(vid.path, `${sSlug}/video${extname(vid.path)}`)
       if (dif?.path) diff = await upload(dif.path, `${sSlug}/diff.png`)
     }
     const frames: FrameRow[] = []
@@ -235,6 +240,14 @@ export async function postRehearsal(
         }
       } catch (e) { console.warn(`  walkthrough ${sSlug}: ${(e as Error).message}`) }
     }
+    // With no screenshot of its own, the scene's final screen is the last
+    // step's frame of the actor that step is about.
+    if (!screenshot && frames.length) {
+      const lastStep = frames[frames.length - 1].step_index
+      const last = frames.filter(f => f.step_index === lastStep)
+      screenshot = (last.find(f => f.is_focus) ?? last[0]).frame_url
+    }
+    framesSent += frames.length
     const fixmeScene = t.status === 'fixme' && o ? o : null
     rows.push({
       feature_file: t.featureFile, scenario_name: t.title,
@@ -258,9 +271,23 @@ export async function postRehearsal(
         runKey, baseUrl: env.BASE_URL ?? '',
       })),
     })
+    const text = await res.text()
+    let stored: { verdict?: string; error?: string; frames_created?: number } = {}
+    try { stored = JSON.parse(text) } catch { /* not JSON: reported below as text */ }
     if (!res.ok) {
-      console.error(`✗ test-report ${res.status}: ${(await res.text()).slice(0, 300)}`)
+      console.error(`✗ test-report ${res.status}: ${text.slice(0, 300)}`)
       process.exitCode = 1
+      // The dashboard marked the run an error (it could not store what Pete
+      // reviews): the gate must say so too, not pass on the local verdict.
+      if (stored.verdict === 'error') {
+        result.verdict = 'error'
+        result.description = `The dashboard could not store this rehearsal: ${stored.error ?? res.status}`.slice(0, 140)
+      }
+    } else if (framesSent > 0 && typeof stored.frames_created === 'number' && stored.frames_created < framesSent) {
+      console.error(`✗ the dashboard stored ${stored.frames_created} of ${framesSent} walkthrough frames`)
+      process.exitCode = 1
+      result.verdict = 'error'
+      result.description = `The dashboard stored ${stored.frames_created} of ${framesSent} walkthrough frames — see the run log`
     } else {
       console.log(`✓ posted ${rows.length} scenario row(s) — ${description}`)
     }

@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { notPerformedRow, postRehearsal, runPayload } from './post.ts'
+import { png } from './pngFixture.ts'
 import type { ScenarioOutcome } from './verdict.ts'
 
 const outcome: ScenarioOutcome = {
@@ -299,4 +300,68 @@ test('with no posting token it prints a warning annotation and still returns the
     expect(calls).toEqual([])
   } finally { console.log = origLog; console.warn = origWarn }
   expect(logs).toContain('::warning::SPD_REHEARSAL_TOKEN is not set — the rehearsal was not posted to the dashboard (run spd ci setup)')
+})
+
+// A passing "Kira shares" whose Playwright screenshot is the blank page the
+// scene never used, filmed on Kira's own browser over two steps.
+function filmedScene(): string {
+  const root = project()
+  const art = join(root, 'review', 'artifacts', 'kira')
+  mkdirSync(art, { recursive: true })
+  const white = [255, 255, 255]
+  writeFileSync(join(art, 'test-finished-1.png'), png([[white, white], [white, white]]))
+  writeFileSync(join(art, 'video.webm'), 'webm')
+  writeFileSync(join(root, 'review', 'results.json'), JSON.stringify({
+    stats: { expected: 1, unexpected: 0, skipped: 0 },
+    suites: [{ title: 'a.spec.ts', file: 'a.spec.ts', specs: [{ title: 'Kira shares', ok: true, tests: [{ results: [{
+      status: 'passed', duration: 5, attachments: [
+        { name: 'screenshot', contentType: 'image/png', path: join(art, 'test-finished-1.png') },
+        { name: 'video', contentType: 'video/webm', path: join(art, 'video.webm') },
+      ] }] }] }] }],
+  }))
+  const dir = join(root, 'review', 'walkthroughs', 'kira-shares')
+  mkdirSync(dir, { recursive: true })
+  for (const f of ['01-kira.png', '02-kira.png', '02-beth.png']) writeFileSync(join(dir, f), 'frame')
+  const frame = (actor: string, file: string) => ({ actor_id: actor, file, url: 'https://staging/', width: 1, height: 1, captured_at: '', error: null })
+  writeFileSync(join(dir, 'walkthrough.json'), JSON.stringify({
+    actors: [{ id: 'kira', name: 'Kira', role: 'member' }, { id: 'beth', name: 'Beth', role: 'member' }],
+    steps: [
+      { index: 1, title: 'Given Kira is signed in', narration: '', focus_actor_id: 'kira', status: 'passed', error_message: null, frames: [frame('kira', '01-kira.png')] },
+      { index: 2, title: 'When she shares', narration: '', focus_actor_id: 'beth', status: 'passed', error_message: null, frames: [frame('kira', '02-kira.png'), frame('beth', '02-beth.png')] },
+    ],
+  }))
+  return root
+}
+const stored = (frames: number) => (url: string) => url.endsWith('/upload')
+  ? new Response(JSON.stringify({ url: `https://store/${Math.random()}` }), { status: 201 })
+  : new Response(JSON.stringify({ ok: true, frames_created: frames }), { status: 201 })
+
+test("a blank page's screenshot and video are not posted; the final screen is the last step's focus frame", async () => {
+  const { calls, fetchFn } = stub(stored(3))
+  const r = await postRehearsal(env, { fetchFn, cwd: filmedScene() })
+  expect(r.verdict).toBe('passed')
+  const paths = calls.filter(c => c.url.endsWith('/upload')).map(c => String(c.body.path))
+  expect(paths.some(p => p.endsWith('/screenshot.png') || p.endsWith('/video.webm'))).toBe(false)
+  const sc = calls.find(c => c.url.endsWith('/test-report'))!.body.scenarios[0]
+  expect(sc.video_url).toBeNull()
+  const focus = sc.frames.find((f: any) => f.step_index === 2 && f.actor_id === 'beth')
+  expect(sc.screenshot_url).toBe(focus.frame_url)
+})
+
+test('frames the dashboard did not store turn the verdict into an error', async () => {
+  const { fetchFn } = stub(stored(0))
+  const r = await postRehearsal(env, { fetchFn, cwd: filmedScene() })
+  expect(r.verdict).toBe('error')
+  expect(r.description).toContain('0 of 3 walkthrough frames')
+  expect(process.exitCode).toBe(1)
+})
+
+test('a run the dashboard refused as an error is an error at the gate too', async () => {
+  const { fetchFn } = stub(url => url.endsWith('/test-report')
+    ? new Response(JSON.stringify({ error: 'walkthrough frames were not stored: permission denied', verdict: 'error' }), { status: 500 })
+    : new Response(JSON.stringify({ url: 'https://store/x' }), { status: 201 }))
+  const r = await postRehearsal(env, { fetchFn, cwd: filmedScene() })
+  expect(r.verdict).toBe('error')
+  expect(r.description).toContain('permission denied')
+  expect(process.exitCode).toBe(1)
 })
