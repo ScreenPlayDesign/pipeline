@@ -417,6 +417,15 @@ test('on a 2xx the verdict the dashboard recomputed wins over the local one', as
   expect(r.description).toBe('The dashboard counted this rehearsal as failed — see the run log')
 })
 
+test('on a 2xx the dashboard\'s own status line wins over the local one', async () => {
+  const description = '★ 1/1 canonical · 1/2 scenes · 1 to look at'
+  const { fetchFn } = stub(url => url.endsWith('/test-report')
+    ? new Response(JSON.stringify({ ok: true, verdict: 'passed', description }), { status: 201 })
+    : ok())
+  const r = await postRehearsal(env, { fetchFn, cwd: project() })
+  expect(r).toEqual({ verdict: 'passed', description })
+})
+
 // A failed "Kira shares" with Playwright's visual-comparison images.
 function comparisonScene(files: string[], status: 'failed' | 'passed' = 'failed'): string {
   const root = project()

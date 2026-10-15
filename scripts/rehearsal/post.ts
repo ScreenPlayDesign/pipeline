@@ -315,7 +315,7 @@ export async function postRehearsal(
       })),
     })
     const text = await res.text()
-    let stored: { verdict?: string; error?: string; frames_created?: number } = {}
+    let stored: { verdict?: string; description?: string; error?: string; frames_created?: number } = {}
     try { stored = JSON.parse(text) } catch { /* not JSON: reported below as text */ }
     if (!res.ok) {
       console.error(`✗ test-report ${res.status}: ${text.slice(0, 300)}`)
@@ -331,9 +331,9 @@ export async function postRehearsal(
     } else {
       // The server recomputes the verdict from what it stored; it decides.
       if (stored.verdict === 'passed' || stored.verdict === 'failed' || stored.verdict === 'error') {
-        if (stored.verdict !== result.verdict) {
-          result.description = `The dashboard counted this rehearsal as ${stored.verdict} — see the run log`
-        }
+        // The server recomputes the verdict and its line from what it stored (and the canonical set).
+        if (typeof stored.description === 'string' && stored.description) result.description = stored.description
+        else if (stored.verdict !== result.verdict) result.description = `The dashboard counted this rehearsal as ${stored.verdict} — see the run log`
         result.verdict = stored.verdict
       }
       console.log(`✓ posted ${rows.length} scenario row(s) — ${result.description}`)
