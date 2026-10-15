@@ -192,12 +192,18 @@ for (const waited of ['failure', 'cancelled']) {
   test(`staging wait ${waited} posts the run as error with the reason, without reading any report`, async () => {
     const { calls, fetchFn } = stub(ok)
     const r = await postRehearsal({ ...env, WAITED: waited, PLAYWRIGHT_OUTCOME: 'skipped' }, { fetchFn, cwd: project() })
-    expect(r).toEqual({ verdict: 'error', description: 'Staging never served this commit within 15 minutes' })
+    expect(r).toEqual({ verdict: 'error', description: 'Staging was not ready — see the run log' })
     const body = calls.find(c => c.url.endsWith('/test-report'))!.body
     expect(body).toMatchObject({ status: 'failed', verdict: 'error', scenarios: [],
-      metadata: { summary: 'Staging never served this commit within 15 minutes' } })
+      metadata: { summary: 'Staging was not ready — see the run log' } })
   })
 }
+
+test('a wait reason from the workflow is the run description', async () => {
+  const { fetchFn } = stub(ok)
+  const r = await postRehearsal({ ...env, WAITED: 'failure', WAIT_REASON: 'The staging database migrations did not finish: supabase/staging-deploy is failure' }, { fetchFn, cwd: project() })
+  expect(r.description).toBe('The staging database migrations did not finish: supabase/staging-deploy is failure')
+})
 
 for (const outcome of [undefined, '']) {
   test(`waited success with Playwright outcome ${JSON.stringify(outcome)} posts an error without reading any report`, async () => {

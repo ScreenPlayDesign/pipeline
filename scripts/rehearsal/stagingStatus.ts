@@ -37,22 +37,34 @@ export async function waitForStagingDeploy(
   const sleep = opts.sleep ?? ((ms: number) => new Promise(r => setTimeout(r, ms)))
   const now = opts.now ?? Date.now
   const start = now()
+  let seen: string | null = null, lastError = 'no answer yet'
   for (;;) {
-    let state: string | null = null
+    // 'ok' = the API answered; only then does a missing context mean "absent".
+    let answered = false, state: string | null = null
     try {
-      const res = await fetchFn(`https://api.github.com/repos/${repo}/commits/${sha}/status`, {
+      const res = await fetchFn(`https://api.github.com/repos/${repo}/commits/${sha}/status?per_page=100`, {
         headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' },
         signal: AbortSignal.timeout(opts.requestTimeoutMs ?? 10_000),
       })
       if (res.ok) {
         const body = (await res.json()) as { statuses?: Array<{ context?: string; state?: string }> }
         state = body.statuses?.find(s => s.context === STAGING_DEPLOY_CONTEXT)?.state ?? null
-      }
-    } catch { /* unreachable: treated as no status yet */ }
-    const decision = decideStagingDeploy({ state, elapsedMs: now() - start, graceMs, timeoutMs })
-    if (decision.action === 'done') return { ok: true, note: null }
-    if (decision.action === 'continue') return { ok: true, note: decision.note }
-    if (decision.action === 'failed') return { ok: false, reason: decision.reason }
+        answered = true
+      } else if (res.status === 401 || res.status === 403 || res.status === 404) {
+        lastError = `the GitHub API answered ${res.status} — check that the workflow token can read commit statuses (statuses: read)`
+      } else lastError = `the GitHub API answered ${res.status}`
+    } catch (e) { lastError = `the GitHub API was unreachable (${(e as Error).message})` }
+    const elapsedMs = now() - start
+    if (answered) {
+      if (state) seen = state
+      // Absent and never seen: the project has no Supabase deploy.
+      const decision = decideStagingDeploy({ state: state ?? seen, elapsedMs, graceMs, timeoutMs })
+      if (decision.action === 'done') return { ok: true, note: null }
+      if (decision.action === 'continue') return { ok: true, note: decision.note }
+      if (decision.action === 'failed') return { ok: false, reason: decision.reason }
+    } else if (elapsedMs >= timeoutMs) {
+      return { ok: false, reason: `Could not read ${STAGING_DEPLOY_CONTEXT} within ${Math.round(timeoutMs / 60_000)} min: ${lastError}` }
+    }
     await sleep(intervalMs)
   }
 }

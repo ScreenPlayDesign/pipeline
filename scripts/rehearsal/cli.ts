@@ -13,17 +13,23 @@ import { postRehearsal } from './post.ts'
 import { resetCast } from './reset.ts'
 
 const cmd = process.argv[2]
+// The reason goes to the job output so the gate can say why staging was not ready.
+function waitFailed(reason: string): never {
+  console.error(`::error::${reason.replace(/[\r\n]+/g, ' ')}`)
+  if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `reason=${reason.replace(/[\r\n]+/g, ' ').slice(0, 140)}\n`)
+  process.exit(1)
+}
 if (cmd === 'config') {
   const c = readProjectConfig(projectRoot())
   console.log(`slug=${c.slug}`)
   console.log(`staging_url=${c.stagingUrl}`)
 } else if (cmd === 'wait') {
   const r = await waitForBuild(process.env.STAGING_URL ?? '', process.env.GITHUB_SHA ?? '')
-  if (!r.ok) { console.error(r.reason); process.exit(1) }
+  if (!r.ok) { waitFailed(r.reason) }
   console.log('staging serves this commit')
 } else if (cmd === 'wait-migrations') {
   const r = await waitForStagingDeploy(process.env.GITHUB_REPOSITORY ?? '', process.env.GITHUB_SHA ?? '', process.env.GITHUB_TOKEN ?? '')
-  if (!r.ok) { console.error(`::error::${r.reason}`); process.exit(1) }
+  if (!r.ok) { waitFailed(r.reason) }
   if (r.note) console.log(`::notice::${r.note}`)
   else console.log('staging migrations are applied')
 } else if (cmd === 'post') {

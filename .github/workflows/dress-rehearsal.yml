@@ -53,6 +53,7 @@ jobs:
       slug: ${{ steps.cfg.outputs.slug }}
       staging_url: ${{ steps.cfg.outputs.staging_url }}
       waited: ${{ steps.wait.outcome }}
+      wait_reason: ${{ steps.wait.outputs.reason }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -240,6 +241,7 @@ jobs:
         env:
           PROJECT_ROOT: ${{ github.workspace }}
           WAITED: ${{ needs.start.outputs.waited }}
+          WAIT_REASON: ${{ needs.start.outputs.wait_reason }}
           RESET_RESULT: ${{ needs.reset.result }}
           PLAYWRIGHT_OUTCOME: ${{ needs.perform.outputs.playwright }}
           SPD_REHEARSAL_TOKEN: ${{ secrets.SPD_REHEARSAL_TOKEN }}
@@ -258,9 +260,10 @@ jobs:
           VERDICT: ${{ steps.post.outputs.verdict }}
           DESC: ${{ steps.post.outputs.description }}
           WAITED: ${{ needs.start.outputs.waited }}
+          WAIT_REASON: ${{ needs.start.outputs.wait_reason }}
           TARGET: https://screenplaydesign.com/pr/${{ needs.start.outputs.slug }}/screenplay
         run: |
-          if [ "$WAITED" != success ]; then VERDICT=error; DESC="Staging never served this commit within 15 minutes"; fi
+          if [ "$WAITED" != success ]; then VERDICT=error; DESC="${WAIT_REASON:-Staging was not ready — see the run log}"; fi
           case "$VERDICT" in
             passed) STATE=success ;;
             failed) STATE=failure ;;

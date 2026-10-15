@@ -162,7 +162,7 @@ export async function postRehearsal(
   }
   if (neverServed) {
     verdict = null; outcomes = []; tests = []
-    description = 'Staging never served this commit within 15 minutes'
+    description = env.WAIT_REASON || 'Staging was not ready — see the run log'
   }
   const result = { verdict: (verdict?.verdict ?? 'error') as 'passed' | 'failed' | 'error', description }
 
