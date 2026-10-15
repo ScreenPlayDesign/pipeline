@@ -113,10 +113,10 @@ test('a missing api url or project slug is the same error', async () => {
   }
 })
 
-test('a network error is logged, fails the run, and still returns the verdict', async () => {
+test('a network error is logged, fails the run, and makes the verdict an error', async () => {
   const { calls, fetchFn } = stub(() => { throw new Error('connection reset') })
   const r = await postRehearsal(env, { fetchFn, cwd: project() })
-  expect(r.verdict).toBe('passed')
+  expect(r).toEqual({ verdict: 'error', description: "The dashboard didn't store this rehearsal (connection reset) — see the run log" })
   expect(process.exitCode).toBe(1)
   expect(calls.map(c => c.url)).toEqual(['https://api.test/screenplay-report', 'https://api.test/test-report'])
 })
@@ -381,6 +381,40 @@ test('a run the dashboard refused as an error is an error at the gate too', asyn
   expect(r.verdict).toBe('error')
   expect(r.description).toContain('permission denied')
   expect(process.exitCode).toBe(1)
+})
+
+for (const status of [401, 502]) {
+  test(`a ${status} from the dashboard makes the verdict an error even when local says passed`, async () => {
+    const { fetchFn } = stub(url => url.endsWith('/test-report')
+      ? new Response(status === 401 ? JSON.stringify({ error: 'unauthorized' }) : '<html>Bad Gateway</html>', { status })
+      : ok())
+    const r = await postRehearsal(env, { fetchFn, cwd: project() })
+    expect(r.verdict).toBe('error')
+    expect(r.description).toBe(status === 401
+      ? "The dashboard didn't store this rehearsal (401: unauthorized) — see the run log"
+      : "The dashboard didn't store this rehearsal (502) — see the run log")
+    expect(process.exitCode).toBe(1)
+  })
+}
+
+test('a long multi-line reason still gives a one-line description of at most 140 chars', async () => {
+  const { fetchFn } = stub(url => url.endsWith('/test-report')
+    ? new Response(JSON.stringify({ error: 'x'.repeat(300) + '\nsecond line' }), { status: 500 })
+    : ok())
+  const r = await postRehearsal(env, { fetchFn, cwd: project() })
+  expect(r.verdict).toBe('error')
+  expect(r.description.length).toBeLessThanOrEqual(140)
+  expect(r.description).not.toContain('\n')
+  expect(r.description.endsWith(') — see the run log')).toBe(true)
+})
+
+test('on a 2xx the verdict the dashboard recomputed wins over the local one', async () => {
+  const { fetchFn } = stub(url => url.endsWith('/test-report')
+    ? new Response(JSON.stringify({ ok: true, verdict: 'failed' }), { status: 201 })
+    : ok())
+  const r = await postRehearsal(env, { fetchFn, cwd: project() })
+  expect(r.verdict).toBe('failed')
+  expect(r.description).toBe('The dashboard counted this rehearsal as failed — see the run log')
 })
 
 // A failed "Kira shares" with Playwright's visual-comparison images.

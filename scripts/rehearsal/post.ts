@@ -320,23 +320,38 @@ export async function postRehearsal(
     if (!res.ok) {
       console.error(`✗ test-report ${res.status}: ${text.slice(0, 300)}`)
       process.exitCode = 1
-      // The dashboard marked the run an error (it could not store what Pete
-      // reviews): the gate must say so too, not pass on the local verdict.
-      if (stored.verdict === 'error') {
-        result.verdict = 'error'
-        result.description = `The dashboard could not store this rehearsal: ${stored.error ?? res.status}`.slice(0, 140)
-      }
+      // Whatever the dashboard did not store, Pete cannot review: the gate
+      // must say so, not pass on the local verdict.
+      Object.assign(result, notStored(stored.error ? `${res.status}: ${stored.error}` : String(res.status)))
     } else if (framesSent > 0 && typeof stored.frames_created === 'number' && stored.frames_created < framesSent) {
       console.error(`✗ the dashboard stored ${stored.frames_created} of ${framesSent} walkthrough frames`)
       process.exitCode = 1
       result.verdict = 'error'
       result.description = `The dashboard stored ${stored.frames_created} of ${framesSent} walkthrough frames — see the run log`
     } else {
-      console.log(`✓ posted ${rows.length} scenario row(s) — ${description}`)
+      // The server recomputes the verdict from what it stored; it decides.
+      if (stored.verdict === 'passed' || stored.verdict === 'failed' || stored.verdict === 'error') {
+        if (stored.verdict !== result.verdict) {
+          result.description = `The dashboard counted this rehearsal as ${stored.verdict} — see the run log`
+        }
+        result.verdict = stored.verdict
+      }
+      console.log(`✓ posted ${rows.length} scenario row(s) — ${result.description}`)
     }
   } catch (e) {
     console.error(`✗ test-report failed: ${(e as Error).message}`)
     process.exitCode = 1
+    Object.assign(result, notStored((e as Error).message))
   }
   return result
+}
+
+/** The gate result when the dashboard did not store the run: one line, ≤140 chars. */
+export function notStored(reason: string): { verdict: 'error'; description: string } {
+  const head = "The dashboard didn't store this rehearsal ("
+  const tail = ') — see the run log'
+  let why = reason.replace(/\s+/g, ' ').trim() || 'no reason given'
+  const room = 140 - head.length - tail.length
+  if (why.length > room) why = why.slice(0, room - 1) + '…'
+  return { verdict: 'error', description: head + why + tail }
 }
