@@ -88,6 +88,23 @@ describe('collectCastEntries', () => {
     expect(entries.find(e => e.kind === 'setting')?.file_path).toBe('screenplay/setting/stakeholders.md')
   })
 
+  test('reads personae/<handle>/ at the repo root before screenplay/personae/', () => {
+    const r = mkdtempSync(join(tmpdir(), 'spd-screenplay-root-'))
+    try {
+      const dir = join(r, 'screenplay')
+      mkdirSync(join(dir, 'features'), { recursive: true })
+      mkdirSync(join(r, 'personae', 'albert'), { recursive: true })
+      mkdirSync(join(dir, 'personae', 'old-desktop'), { recursive: true })
+      writeFileSync(join(r, 'personae', 'albert', 'account_settings.md'), '---\npersona: albert\nname: Albert\ndevice: Laptop Chrome\n---\nThe owner.')
+      writeFileSync(join(r, 'personae', 'albert', 'avatar.svg'), '<svg/>')
+      writeFileSync(join(dir, 'personae', 'old-desktop', 'account_settings.md'), '---\nname: Old\n---\nIgnored once personae/ exists.')
+      const personae = collectCastEntries(dir).filter(e => e.kind === 'persona')
+      expect(personae.map(p => p.actor_key)).toEqual(['albert'])
+      expect(personae[0].file_path).toBe('personae/albert/account_settings.md')
+      expect(personae[0].avatar_path).toBe(join(r, 'personae', 'albert', 'avatar.svg'))
+    } finally { rmSync(r, { recursive: true, force: true }) }
+  })
+
   test('skips symlinked scenes, markdown and avatars', () => {
     const r = mkdtempSync(join(tmpdir(), 'spd-screenplay-link-'))
     try {

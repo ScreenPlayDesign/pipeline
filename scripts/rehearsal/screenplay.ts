@@ -111,6 +111,15 @@ function personaIdentity(fm: Record<string, string> | null, personaDir: string) 
   return { actor_key, name, role: fm?.role ?? null, device: fm?.device ?? null }
 }
 
+/**
+ * Where a project keeps its personae: personae/<handle>/ at the repo root
+ * (the convention since 2026-10-20), else the older screenplay/personae/.
+ */
+export function personaeDirFor(screenplayRoot: string): string {
+  const root = path.join(path.dirname(screenplayRoot), 'personae')
+  return fs.existsSync(root) ? root : path.join(screenplayRoot, 'personae')
+}
+
 export function collectCastEntries(screenplayRoot: string): CastEntry[] {
   const entries: CastEntry[] = []
   const rel = (full: string) => path.relative(path.dirname(screenplayRoot), full).split(path.sep).join('/')
@@ -135,7 +144,7 @@ export function collectCastEntries(screenplayRoot: string): CastEntry[] {
       }
     }
   }
-  collect(path.join(screenplayRoot, 'personae'), 'persona')
+  collect(personaeDirFor(screenplayRoot), 'persona')
   collect(path.join(screenplayRoot, 'setting'), 'setting')
 
   const featuresDir = path.join(screenplayRoot, 'features')
