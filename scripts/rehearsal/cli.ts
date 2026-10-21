@@ -1,5 +1,5 @@
 // scripts/rehearsal/cli.ts — the steps dress-rehearsal.yml runs.
-//   bun cli.ts config   → slug=… / staging_url=… (for $GITHUB_OUTPUT)
+//   bun cli.ts config   → slug=… / staging_url=… / playwright_image=… / playwright_matched=… (for $GITHUB_OUTPUT)
 //   bun cli.ts wait     → waits for STAGING_URL to serve GITHUB_SHA; exits 1 with the reason
 //   bun cli.ts wait-migrations → waits for commit status supabase/staging-deploy = success (absent: continues after 5 min)
 //   bun cli.ts post     → posts the rehearsal; appends verdict= / description= to $GITHUB_OUTPUT
@@ -11,6 +11,7 @@ import { waitForBuild } from './buildInfo.ts'
 import { waitForStagingDeploy } from './stagingStatus.ts'
 import { postRehearsal } from './post.ts'
 import { resetCast } from './reset.ts'
+import { playwrightOutputs } from './playwrightImage.ts'
 
 const cmd = process.argv[2]
 // The reason goes to the job output so the gate can say why staging was not ready.
@@ -23,6 +24,11 @@ if (cmd === 'config') {
   const c = readProjectConfig(projectRoot())
   console.log(`slug=${c.slug}`)
   console.log(`staging_url=${c.stagingUrl}`)
+  // The scenes' container: read from bun.lock as text, never run.
+  const lock = join(projectRoot(), 'bun.lock')
+  const pw = playwrightOutputs(existsSync(lock) ? readFileSync(lock, 'utf8') : null)
+  console.log(`playwright_image=${pw.playwright_image}`)
+  console.log(`playwright_matched=${pw.playwright_matched}`)
 } else if (cmd === 'wait') {
   const r = await waitForBuild(process.env.STAGING_URL ?? '', process.env.GITHUB_SHA ?? '')
   if (!r.ok) { waitFailed(r.reason) }
