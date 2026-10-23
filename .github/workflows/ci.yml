@@ -107,7 +107,7 @@ jobs:
   # status checks on staging's branch protection alongside the two below.
   lane-guard:
     name: Lane guard (schema freeze)
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.SPD_RUNS_ON || '"ubuntu-latest"') }}
     timeout-minutes: 3
     if: github.event_name == 'pull_request' && github.base_ref == 'staging'
     outputs:
@@ -143,7 +143,7 @@ jobs:
 
   typecheck-build:
     name: TypeScript + Build smoke test
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.SPD_RUNS_ON || '"ubuntu-latest"') }}
     timeout-minutes: 8
 
     steps:
@@ -175,7 +175,7 @@ jobs:
 
   visual-gate:
     name: Gherkin + Playwright visual gate
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.SPD_RUNS_ON || '"ubuntu-latest"') }}
     timeout-minutes: 12
 
     steps:

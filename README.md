@@ -1,5 +1,11 @@
 # spd-pipeline
 
+**Where jobs run.** Every job here uses
+`runs-on: ${{ fromJSON(vars.SPD_RUNS_ON || '"ubuntu-latest"') }}`: GitHub's hosted
+machines unless the organisation variable `SPD_RUNS_ON` names others. Set it to
+`["self-hosted","playhouse"]` to run on the Playhouse's runners on the mini
+(playhouse/docs/runners.md); set it back to `"ubuntu-latest"` when the mini is off.
+
 Canonical CI/CD reusable workflows for every ScreenPlayDesign project.
 **Corrected 2026-07-06:** only two files live here now — `ci.yml` and
 `deploy-prod.yml`. `deploy-dev.yml` and `deploy-staging.yml` were deleted

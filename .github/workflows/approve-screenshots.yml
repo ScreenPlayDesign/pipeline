@@ -31,7 +31,7 @@ permissions:
 jobs:
   require-token:
     name: Require PR_BOT_TOKEN
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.SPD_RUNS_ON || '"ubuntu-latest"') }}
     timeout-minutes: 5
     steps:
       - name: Require PR_BOT_TOKEN
@@ -46,7 +46,7 @@ jobs:
   reset:
     name: Reset the cast on staging
     needs: require-token
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.SPD_RUNS_ON || '"ubuntu-latest"') }}
     timeout-minutes: 10
     permissions:
       contents: read
@@ -81,7 +81,7 @@ jobs:
   render:
     name: Render Linux baselines
     needs: [require-token, reset]
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.SPD_RUNS_ON || '"ubuntu-latest"') }}
     timeout-minutes: 45
     outputs:
       changed: ${{ steps.collect.outputs.changed }}
@@ -156,7 +156,7 @@ jobs:
     name: Commit the Linux baselines to the design lane
     needs: render
     if: needs.render.outputs.changed != '0'
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.SPD_RUNS_ON || '"ubuntu-latest"') }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0

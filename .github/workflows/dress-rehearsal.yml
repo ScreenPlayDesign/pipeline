@@ -46,7 +46,7 @@ env:
 jobs:
   start:
     name: Wait for staging
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.SPD_RUNS_ON || '"ubuntu-latest"') }}
     timeout-minutes: 35
     permissions:
       contents: read
@@ -110,7 +110,7 @@ jobs:
     name: Reset the cast on staging
     needs: start
     if: needs.start.outputs.waited == 'success'
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.SPD_RUNS_ON || '"ubuntu-latest"') }}
     timeout-minutes: 10
     permissions:
       contents: read
@@ -145,7 +145,7 @@ jobs:
     name: Perform every scene on staging
     needs: [start, reset]
     if: needs.start.outputs.waited == 'success' && needs.reset.result == 'success'
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.SPD_RUNS_ON || '"ubuntu-latest"') }}
     timeout-minutes: 45
     # Chromium and its libraries come with the image (the version check is in playwrightImage.ts).
     container: ${{ needs.start.outputs.playwright_image }}
@@ -221,7 +221,7 @@ jobs:
     # Not always(): a run cancelled by a newer staging push must not post an error for the superseded commit.
     # A failed start (e.g. the wait timing out) is not a cancellation, so it still reaches here.
     if: ${{ !cancelled() && needs.start.outputs.slug != '' }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.SPD_RUNS_ON || '"ubuntu-latest"') }}
     timeout-minutes: 15
     permissions:
       contents: read
