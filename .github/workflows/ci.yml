@@ -73,6 +73,10 @@ on:
         description: 'Base URL for the visual gate to test against (a deployed dev/staging/prod preview). Leave blank to let Playwright boot its own local dev server instead.'
         type: string
         default: ''
+      pipeline-ref:
+        description: 'The ScreenPlayDesign/pipeline commit this caller pins in `uses:` (the lane guard checks out its script at it). Falls back to github.job_workflow_sha when that is set; with neither, the lane guard fails rather than run main.'
+        type: string
+        default: ''
     # Named secrets only — callers pass these explicitly instead of
     # `secrets: inherit`, so this public workflow never sees anything else.
     secrets:
@@ -90,56 +94,105 @@ permissions:
 
 jobs:
   # ── Lane guard — the pipeline's structural rules, enforced as a check ──────
-  # Runs only on PRs whose BASE is staging (i.e. a lane's standing PR). Two
-  # rules from the 2026-07-07 lane model (see web-dashboard/supabase/
-  # SCHEMA_REBUILD_PROPOSAL.md, Amendment v0.9.2):
+  # Runs only on PRs whose BASE is staging (i.e. a lane's standing PR). The
+  # rules (the lanes model, 2026-10-22) live in scripts/lane-guard.sh, tested
+  # by scripts/lane-guard.test.sh:
   #
-  #   SCHEMA FREEZE   design and chore lanes must not touch
-  #                   supabase/migrations/** — migrations ride the dev lane
-  #                   only, atomically with the code that needs them.
-  #   ESCALATION FLAG when the dev lane DOES carry migrations, this job
-  #                   surfaces it (step summary + output). The visual-gate
-  #                   job independently detects the same thing and reports
-  #                   carries_migration to the dashboard, which holds the
-  #                   gate pending for the CORNERPOST even with CI green.
+  #   dev     may change anything — supabase/ rides the dev lane only.
+  #   design  may not touch supabase/ or a dev-only path (spd_config.toml
+  #           [lanes] dev_only, e.g. the generated src/types/db.ts).
+  #   chore   may change anything.
+  #   any other head branch into staging fails, whatever it carries —
+  #   proposal-N lands on dev or design, never on staging.
+  #
+  # The script is checked out from this repo at the commit the caller pins,
+  # never at main. When the dev lane carries migrations the step summary says
+  # so; the into-staging gate escalates to the cornerpost.
   #
   # Add "<caller-job-id> / Lane guard (schema freeze)" to the required
-  # status checks on staging's branch protection alongside the two below.
+  # status checks on staging's branch protection alongside the others.
   lane-guard:
     name: Lane guard (schema freeze)
     runs-on: ${{ fromJSON(vars.SPD_RUNS_ON || '"ubuntu-latest"') }}
     timeout-minutes: 3
     if: github.event_name == 'pull_request' && github.base_ref == 'staging'
-    outputs:
-      carries-migration: ${{ steps.diff.outputs.carries }}
-      migration-files:   ${{ steps.diff.outputs.files }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
-      - name: Check lane diff against the schema rules
-        id: diff
+      # Without a pinned ref, actions/checkout would take main: refuse instead.
+      - name: Resolve the pipeline commit
+        env:
+          PIPELINE_REF: ${{ inputs.pipeline-ref || github.job_workflow_sha }}
+        run: |
+          if [ -z "$PIPELINE_REF" ]; then
+            echo "❌  No pipeline commit: pass \`pipeline-ref\` with the same commit pinned in \`uses:\`." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: ScreenPlayDesign/pipeline
+          ref: ${{ inputs.pipeline-ref || github.job_workflow_sha }}
+          path: .spd-pipeline
+          persist-credentials: false
+      - name: Move the pipeline out of the project checkout
+        run: mv .spd-pipeline "$RUNNER_TEMP/spd-pipeline"
+      - name: Check the lane's diff against the lane rules
         env:
           LANE: ${{ github.head_ref }}   # via env, never interpolated into the script
         run: |
           git fetch origin staging --quiet
-          FILES=$(git diff --name-only origin/staging...HEAD -- supabase/migrations/ | tr '\n' ' ' | sed 's/ $//')
-          echo "files=$FILES"                                    >> "$GITHUB_OUTPUT"
-          echo "carries=$([ -n "$FILES" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
-          if [ -n "$FILES" ]; then
-            case "$LANE" in
-              design|chore)
-                echo "❌  The $LANE lane is SCHEMA-FROZEN — migrations ride the dev lane only." | tee -a "$GITHUB_STEP_SUMMARY"
-                echo "    Offending files: $FILES" | tee -a "$GITHUB_STEP_SUMMARY"
-                exit 1 ;;
-              dev)
-                echo "⚠️  This dev lane carries schema migrations: $FILES" >> "$GITHUB_STEP_SUMMARY"
-                echo "    Its into-staging gate escalates to the cornerpost even when CI is green." >> "$GITHUB_STEP_SUMMARY" ;;
-              *)
-                echo "ℹ️  Non-lane head branch '$LANE' targeting staging — only the three lanes should PR into staging." | tee -a "$GITHUB_STEP_SUMMARY"
-                exit 1 ;;
-            esac
+          FILES=()
+          while IFS= read -r f; do FILES+=("$f"); done < <(git diff --name-only origin/staging...HEAD)
+          MIGRATIONS=$(git diff --name-only origin/staging...HEAD -- supabase/migrations/ | tr '\n' ' ' | sed 's/ $//')
+          set +e
+          REASON=$(bash "$RUNNER_TEMP/spd-pipeline/scripts/lane-guard.sh" "$LANE" ${FILES[@]+"${FILES[@]}"})
+          CODE=$?
+          set -e
+          if [ "$CODE" -eq 0 ]; then
+            echo "✅  $REASON" | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "❌  $REASON" | tee -a "$GITHUB_STEP_SUMMARY"
           fi
+          if [ "$CODE" -eq 0 ] && [ "$LANE" = dev ] && [ -n "$MIGRATIONS" ]; then
+            echo "⚠️  This dev lane carries schema migrations: $MIGRATIONS" >> "$GITHUB_STEP_SUMMARY"
+            echo "    Its into-staging gate escalates to the cornerpost even when CI is green." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit "$CODE"
+
+  # ── Rehearsal evidence — dev and design reach staging only rehearsed ──────
+  # On a dev → staging or design → staging PR, the head commit needs a
+  # rehearsal: commit status spd/local-rehearsal (a person's machine, set by
+  # `spd rehearse`) or spd/stage-rehearsal (the stage), in state success.
+  # A proposal merged into dev by GitHub leaves a merge commit nobody has
+  # rehearsed; this check holds the PR until someone does. chore needs none.
+  # Reads statuses with the job's GITHUB_TOKEN: callers grant statuses: read.
+  # Add "<caller-job-id> / Rehearsal evidence" to staging's required checks.
+  rehearsal-evidence:
+    name: Rehearsal evidence
+    runs-on: ${{ fromJSON(vars.SPD_RUNS_ON || '"ubuntu-latest"') }}
+    timeout-minutes: 3
+    if: >-
+      github.event_name == 'pull_request' && github.base_ref == 'staging' &&
+      (github.head_ref == 'dev' || github.head_ref == 'design')
+    permissions:
+      statuses: read
+    steps:
+      - name: Look for a passing rehearsal of the head commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+          LANE: ${{ github.head_ref }}   # via env, never interpolated into the script
+        run: |
+          FOUND=$(gh api "repos/$REPO/commits/$SHA/status?per_page=100" \
+            --jq '[.statuses[] | select((.context == "spd/local-rehearsal" or .context == "spd/stage-rehearsal") and .state == "success") | .context] | join(" ")')
+          if [ -n "$FOUND" ]; then
+            echo "✅  Rehearsed: $FOUND on ${SHA:0:7}." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "Waiting for a rehearsal of ${SHA:0:7}. On a machine with the project: \`git checkout $LANE && git pull && spd rehearse\`." | tee -a "$GITHUB_STEP_SUMMARY"
+          exit 1
 
   typecheck-build:
     name: TypeScript + Build smoke test
@@ -177,6 +230,12 @@ jobs:
     name: Gherkin + Playwright visual gate
     runs-on: ${{ fromJSON(vars.SPD_RUNS_ON || '"ubuntu-latest"') }}
     timeout-minutes: 12
+    # The proposals' gate: pull requests into dev and design. Not into
+    # staging — there the Rehearsal evidence check stands in for the scenes
+    # (until the stage replaces this gate).
+    if: >-
+      github.event_name == 'pull_request' &&
+      (github.base_ref == 'dev' || github.base_ref == 'design')
 
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
