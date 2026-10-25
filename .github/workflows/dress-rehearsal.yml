@@ -42,6 +42,7 @@ permissions:
 
 env:
   CONTEXT: screenplay / dress rehearsal
+  SPD_BUN_DEFAULT: '1.3.14'
 
 jobs:
   start:
@@ -59,13 +60,14 @@ jobs:
       playwright_image: ${{ steps.cfg.outputs.playwright_image }}
       playwright_matched: ${{ steps.cfg.outputs.playwright_matched }}
     steps:
-      # bun.lock is read as text for the Playwright version (playwrightImage.ts); nothing from the project runs here.
+      # bun.lock is read as text for the Playwright version, package.json for the Bun version (playwrightImage.ts); nothing from the project runs here.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
           sparse-checkout: |
             /spd_config.toml
             /bun.lock
+            /package.json
           sparse-checkout-cone-mode: false
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -75,9 +77,15 @@ jobs:
           persist-credentials: false
       - name: Move the pipeline out of the project checkout
         run: mv .spd-pipeline "$RUNNER_TEMP/spd-pipeline"
+      # The Bun the project asks for (package.json "packageManager": "bun@x.y.z"), else the one pinned default.
+      - name: Pick the Bun version
+        id: bun
+        run: |
+          v=$(sed -n 's/.*"packageManager"[[:space:]]*:[[:space:]]*"bun@\([0-9][0-9.]*\)[^"]*".*/\1/p' package.json 2>/dev/null | head -1)
+          echo "version=${v:-$SPD_BUN_DEFAULT}" >> "$GITHUB_OUTPUT"
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: 1.3.14
+          bun-version: ${{ steps.bun.outputs.version }}
           no-cache: true
       - name: Read spd_config.toml
         id: cfg
@@ -119,7 +127,9 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
-          sparse-checkout: /supabase/testing/reset.sql
+          sparse-checkout: |
+            /supabase/testing/reset.sql
+            /package.json
           sparse-checkout-cone-mode: false
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -129,9 +139,15 @@ jobs:
           persist-credentials: false
       - name: Move the pipeline out of the project checkout
         run: mv .spd-pipeline "$RUNNER_TEMP/spd-pipeline"
+      # The Bun the project asks for (package.json "packageManager": "bun@x.y.z"), else the one pinned default.
+      - name: Pick the Bun version
+        id: bun
+        run: |
+          v=$(sed -n 's/.*"packageManager"[[:space:]]*:[[:space:]]*"bun@\([0-9][0-9.]*\)[^"]*".*/\1/p' package.json 2>/dev/null | head -1)
+          echo "version=${v:-$SPD_BUN_DEFAULT}" >> "$GITHUB_OUTPUT"
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: 1.3.14
+          bun-version: ${{ steps.bun.outputs.version }}
           no-cache: true
       - name: Reset the cast
         env:
@@ -173,9 +189,15 @@ jobs:
           persist-credentials: false
       - name: Move the pipeline out of the project checkout
         run: mv .spd-pipeline "$RUNNER_TEMP/spd-pipeline"
+      # The Bun the project asks for (package.json "packageManager": "bun@x.y.z"), else the one pinned default.
+      - name: Pick the Bun version
+        id: bun
+        run: |
+          v=$(sed -n 's/.*"packageManager"[[:space:]]*:[[:space:]]*"bun@\([0-9][0-9.]*\)[^"]*".*/\1/p' package.json 2>/dev/null | head -1)
+          echo "version=${v:-$SPD_BUN_DEFAULT}" >> "$GITHUB_OUTPUT"
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: 1.3.14
+          bun-version: ${{ steps.bun.outputs.version }}
           no-cache: true
       # Project code runs here. This job is never given STAGING_DB_URL, the dashboard token or status rights.
       - name: Install dependencies
@@ -235,6 +257,7 @@ jobs:
           persist-credentials: false
           sparse-checkout: |
             /spd_config.toml
+            /package.json
             /screenplay/
           sparse-checkout-cone-mode: false
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -245,9 +268,15 @@ jobs:
           persist-credentials: false
       - name: Move the pipeline out of the project checkout
         run: mv .spd-pipeline "$RUNNER_TEMP/spd-pipeline"
+      # The Bun the project asks for (package.json "packageManager": "bun@x.y.z"), else the one pinned default.
+      - name: Pick the Bun version
+        id: bun
+        run: |
+          v=$(sed -n 's/.*"packageManager"[[:space:]]*:[[:space:]]*"bun@\([0-9][0-9.]*\)[^"]*".*/\1/p' package.json 2>/dev/null | head -1)
+          echo "version=${v:-$SPD_BUN_DEFAULT}" >> "$GITHUB_OUTPUT"
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: 1.3.14
+          bun-version: ${{ steps.bun.outputs.version }}
           no-cache: true
       - name: Fetch the evidence
         if: needs.perform.outputs.artifact != ''
