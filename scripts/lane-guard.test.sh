@@ -150,5 +150,56 @@ PR_BASE=prod check_pr 1 'src/types/db.ts' "$R" chore 'printf "[lanes]\ndev_only 
 PR_BASE=prod check_pr 1 'design/a.md' "$R" chore 'mkdir -p docs && git mv design/a.md docs/a.md'
 PR_BASE=prod check_pr 1 'Only staging and chore' "$R" design 'mkdir -p design && echo y > design/a.md'
 
+
+# ── A lane rebased on a release carries the release's bump commit, which staging lacks ──
+# check_rel <expected exit> <expected text or ''> <repo> <lane> <subject> <commands>: the lane is
+# release plus one commit with that subject.
+check_rel() {
+  local expected="$1" want="$2" repo="$3" lane="$4" subject="$5" change="$6"
+  local out code
+  (cd "$repo" && git checkout -q -B "$lane" release && eval "$change" && git add -A && git commit -qm "$subject") >/dev/null
+  out="$(cd "$repo" && bash "$PR_GUARD" "$lane" staging 2>&1)"
+  code=$?
+  if [ "$code" = "$expected" ] && [ -n "$out" ] && { [ -z "$want" ] || printf '%s' "$out" | grep -qF "$want"; }; then
+    pass=$((pass + 1))
+    echo "ok   rel $lane: $subject: $change -> $code"
+  else
+    fail=$((fail + 1))
+    echo "FAIL rel $lane: $subject: $change -> exit $code, expected $expected${want:+ and \"$want\"}; output: ${out:-<none>}"
+  fi
+}
+
+# new_release_repo <bump subject> <bump commands> → staging, and release = staging + that bump.
+new_release_repo() {
+  local repo
+  repo="$(new_repo yes)"
+  (
+    cd "$repo"
+    printf '{\n  "name": "x",\n  "version": "2026.10.24.1",\n  "private": true\n}\n' > package.json
+    printf '# Changelog\n' > CHANGELOG.md
+    git add -A && git commit -qm 'package'
+    git checkout -q -b release
+    eval "$2"
+    git add -A && git commit -qm "$1"
+    git checkout -q staging
+  ) >/dev/null
+  echo "$repo"
+}
+BUMP='printf "# Changelog\n\n## v2026.10.25.1\n" > CHANGELOG.md && sed -i.bak "s/2026.10.24.1/2026.10.25.1/" package.json && rm package.json.bak'
+R3="$(new_release_repo 'docs: release v2026.10.25.1' "$BUMP")"
+check_rel 0 '' "$R3" design 'Design: a new colour' 'echo x > design/colour.md'
+check_rel 1 'CHANGELOG.md' "$R3" design 'Design: a note' 'echo x > design/note.md && echo "- a design note" >> CHANGELOG.md'
+check_rel 1 'package.json' "$R3" design 'Design: a script' 'echo x > design/note.md && sed -i.bak "s/\"private\": true/\"private\": false/" package.json && rm package.json.bak'
+check_rel 0 '' "$R3" dev 'Dev: a fix' 'echo "// y" >> src/App.tsx'
+# A look-alike: the bump's subject on a commit that changes other files too.
+R4="$(new_release_repo 'docs: release v2026.10.25.1' "$BUMP"' && echo "// z" >> src/App.tsx')"
+check_rel 1 'CHANGELOG.md' "$R4" design 'Design: a new colour' 'echo x > design/colour.md'
+# A look-alike: the bump's subject, but package.json changes more than its version.
+R5="$(new_release_repo 'docs: release v2026.10.25.1' "$BUMP"' && sed -i.bak "s/\"private\": true/\"private\": false/" package.json && rm package.json.bak')"
+check_rel 1 'package.json' "$R5" design 'Design: a new colour' 'echo x > design/colour.md'
+# Not a bump's subject: the same files are judged.
+R6="$(new_release_repo 'docs: release notes' "$BUMP")"
+check_rel 1 'CHANGELOG.md' "$R6" design 'Design: a new colour' 'echo x > design/colour.md'
+
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]

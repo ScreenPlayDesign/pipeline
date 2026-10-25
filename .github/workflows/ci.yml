@@ -145,7 +145,8 @@ jobs:
         run: mv .spd-pipeline "$RUNNER_TEMP/spd-pipeline"
       # lane-guard-pr.sh diffs with --no-renames (a move out of supabase/
       # still counts) and reads [lanes] dev_only from the base's
-      # spd_config.toml, not the PR's own.
+      # spd_config.toml, not the PR's own. A file changed only by a release
+      # bump commit (subject and content) is left out.
       - name: Check the lane's diff against the lane rules
         shell: bash
         env:
@@ -153,6 +154,8 @@ jobs:
           BASE_REF: ${{ github.base_ref }}
         run: |
           git fetch origin "$BASE_REF" --quiet
+          # release too: a lane rebased on it carries its bump commit, which the guard leaves out by content
+          git fetch origin release --quiet || true
           bash "$RUNNER_TEMP/spd-pipeline/scripts/lane-guard-pr.sh" "$LANE" "origin/$BASE_REF" | tee -a "$GITHUB_STEP_SUMMARY"
 
   # ── Rehearsal evidence — dev and design reach staging only rehearsed ──────
