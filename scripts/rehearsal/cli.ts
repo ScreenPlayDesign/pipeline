@@ -3,6 +3,7 @@
 //   bun cli.ts wait     → waits for STAGING_URL to serve GITHUB_SHA; exits 1 with the reason
 //   bun cli.ts wait-migrations → waits for commit status supabase/staging-deploy = success (absent: continues after 5 min)
 //   bun cli.ts post     → posts the rehearsal; appends verdict= / description= to $GITHUB_OUTPUT
+//   bun cli.ts playwright-config → prints the project's Playwright config path (relative), or nothing
 //   bun cli.ts reset-cast → runs ${PROJECT_ROOT}/supabase/testing/reset.sql against STAGING_DB_URL (skips with a warning if either is missing)
 import { appendFileSync, existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -12,6 +13,7 @@ import { waitForStagingDeploy } from './stagingStatus.ts'
 import { postRehearsal } from './post.ts'
 import { resetCast } from './reset.ts'
 import { playwrightOutputs } from './playwrightImage.ts'
+import { playwrightConfigFor } from './layout.ts'
 
 const cmd = process.argv[2]
 // The reason goes to the job output so the gate can say why staging was not ready.
@@ -52,7 +54,10 @@ if (cmd === 'config') {
   } else {
     try { await resetCast(url, readFileSync(file, 'utf8')); console.log('cast reset') } catch (e) { console.error((e as Error).message); process.exit(1) }
   }
+} else if (cmd === 'playwright-config') {
+  const cfg = playwrightConfigFor(projectRoot())
+  if (cfg) console.log(cfg)
 } else {
-  console.error('usage: bun cli.ts config|wait|wait-migrations|post|reset-cast')
+  console.error('usage: bun cli.ts config|wait|wait-migrations|post|reset-cast|playwright-config')
   process.exit(2)
 }

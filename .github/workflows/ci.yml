@@ -316,7 +316,9 @@ jobs:
           CARRIES_MIGRATION: ${{ steps.schema.outputs.carries || 'false' }}
           MIGRATION_FILES:   ${{ steps.schema.outputs.files }}
         run: |
-          if [ -f "scripts/post-spd-results.ts" ]; then
+          if [ -f ".stage/scripts/post-spd-results.ts" ]; then
+            bun run .stage/scripts/post-spd-results.ts || echo "⚠  SPD result post failed (non-fatal)"
+          elif [ -f "scripts/post-spd-results.ts" ]; then
             bun run scripts/post-spd-results.ts || echo "⚠  SPD result post failed (non-fatal)"
           else
             echo "scripts/post-spd-results.ts not found — skipping SPD report"

@@ -105,6 +105,21 @@ describe('collectCastEntries', () => {
     } finally { rmSync(r, { recursive: true, force: true }) }
   })
 
+  test('reads screenplay/cast/ before personae/', () => {
+    const r = mkdtempSync(join(tmpdir(), 'spd-screenplay-cast-'))
+    try {
+      const dir = join(r, 'screenplay')
+      mkdirSync(join(dir, 'features'), { recursive: true })
+      mkdirSync(join(dir, 'cast', 'kira'), { recursive: true })
+      mkdirSync(join(r, 'personae', 'albert'), { recursive: true })
+      writeFileSync(join(dir, 'cast', 'kira', 'account_settings.md'), '---\nname: Kira\n---\nThe organiser.')
+      writeFileSync(join(r, 'personae', 'albert', 'account_settings.md'), '---\nname: Albert\n---\nIgnored once screenplay/cast/ exists.')
+      const personae = collectCastEntries(dir).filter(e => e.kind === 'persona')
+      expect(personae.map(p => p.actor_key)).toEqual(['kira'])
+      expect(personae[0].file_path).toBe('screenplay/cast/kira/account_settings.md')
+    } finally { rmSync(r, { recursive: true, force: true }) }
+  })
+
   test('skips symlinked scenes, markdown and avatars', () => {
     const r = mkdtempSync(join(tmpdir(), 'spd-screenplay-link-'))
     try {

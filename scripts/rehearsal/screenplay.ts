@@ -6,6 +6,7 @@
 // every scenario in it).
 import fs from 'node:fs'
 import path from 'node:path'
+import { castDirFor } from './layout.ts'
 
 export interface ScriptStep { keyword: string; text: string }
 export interface ScriptScenario { name: string; tags: string[]; steps: ScriptStep[] }
@@ -112,12 +113,11 @@ function personaIdentity(fm: Record<string, string> | null, personaDir: string) 
 }
 
 /**
- * Where a project keeps its personae: personae/<handle>/ at the repo root
- * (the convention since 2026-10-20), else the older screenplay/personae/.
+ * Where a project keeps its cast: screenplay/cast/ (new skeleton), else personae/
+ * at the repo root (since 2026-10-20), else the older screenplay/personae/.
  */
 export function personaeDirFor(screenplayRoot: string): string {
-  const root = path.join(path.dirname(screenplayRoot), 'personae')
-  return fs.existsSync(root) ? root : path.join(screenplayRoot, 'personae')
+  return castDirFor(path.dirname(screenplayRoot))
 }
 
 export function collectCastEntries(screenplayRoot: string): CastEntry[] {

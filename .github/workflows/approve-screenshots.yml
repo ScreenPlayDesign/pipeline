@@ -123,7 +123,9 @@ jobs:
           BASE_URL: ${{ steps.cfg.outputs.staging_url }}
           VITE_SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
           VITE_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.STAGING_SUPABASE_PUBLISHABLE_KEY }}
-        run: bunx playwright test --retries=0 --workers="$(nproc)" --update-snapshots=changed --reporter=line
+        run: |
+          cfg=$(PROJECT_ROOT="$GITHUB_WORKSPACE" bun --no-env-file "$RUNNER_TEMP/spd-pipeline/scripts/rehearsal/cli.ts" playwright-config)
+          bunx playwright test ${cfg:+--config "$cfg"} --retries=0 --workers="$(nproc)" --update-snapshots=changed --reporter=line
       - name: Collect the new and changed Linux baselines
         id: collect
         env:
