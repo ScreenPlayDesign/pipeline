@@ -94,16 +94,21 @@ permissions:
 
 jobs:
   # ── Lane guard — the pipeline's structural rules, enforced as a check ──────
-  # Runs only on PRs whose BASE is staging (i.e. a lane's standing PR). The
-  # rules (the lanes model, 2026-10-22) live in scripts/lane-guard.sh, tested
+  # Runs on PRs whose BASE is staging or prod (a lane's standing PR). The
+  # rules (the lanes model, 2026-10-24) live in scripts/lane-guard.sh, tested
   # by scripts/lane-guard.test.sh:
   #
-  #   dev     may change anything — supabase/ rides the dev lane only.
-  #   design  may not touch supabase/ or a dev-only path (spd_config.toml
-  #           [lanes] dev_only, e.g. the generated src/types/db.ts).
-  #   chore   may change anything.
-  #   any other head branch into staging fails, whatever it carries —
-  #   proposal-N lands on dev or design, never on staging.
+  #   into staging:
+  #     dev     may change anything — supabase/ rides the dev lane only.
+  #     design  may change only design/.
+  #     chore   never goes to staging; it goes straight into prod.
+  #     any other head branch fails, whatever it carries — proposal-N lands
+  #     on dev or design, never on staging.
+  #   into prod:
+  #     staging may bring anything.
+  #     chore   may change anything but supabase/, a dev-only path (spd_config.toml
+  #             [lanes] dev_only, e.g. src/types/db.ts) or design/.
+  #     any other head branch fails.
   #
   # The scripts are checked out from this repo at the commit the caller pins,
   # never at main. When the dev lane carries migrations the step summary lists
@@ -111,12 +116,12 @@ jobs:
   # takes it only from cli-api's /gate-report, which nothing in CI calls.
   #
   # Add "<caller-job-id> / Lane guard (schema freeze)" to the required
-  # status checks on staging's branch protection alongside the others.
+  # status checks on staging's and prod's branch protection alongside the others.
   lane-guard:
     name: Lane guard (schema freeze)
     runs-on: ${{ fromJSON(vars.SPD_RUNS_ON || '"ubuntu-latest"') }}
     timeout-minutes: 3
-    if: github.event_name == 'pull_request' && github.base_ref == 'staging'
+    if: github.event_name == 'pull_request' && (github.base_ref == 'staging' || github.base_ref == 'prod')
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -139,15 +144,16 @@ jobs:
       - name: Move the pipeline out of the project checkout
         run: mv .spd-pipeline "$RUNNER_TEMP/spd-pipeline"
       # lane-guard-pr.sh diffs with --no-renames (a move out of supabase/
-      # still counts) and reads [lanes] dev_only from staging's
+      # still counts) and reads [lanes] dev_only from the base's
       # spd_config.toml, not the PR's own.
       - name: Check the lane's diff against the lane rules
         shell: bash
         env:
           LANE: ${{ github.head_ref }}   # via env, never interpolated into the script
+          BASE_REF: ${{ github.base_ref }}
         run: |
-          git fetch origin staging --quiet
-          bash "$RUNNER_TEMP/spd-pipeline/scripts/lane-guard-pr.sh" "$LANE" origin/staging | tee -a "$GITHUB_STEP_SUMMARY"
+          git fetch origin "$BASE_REF" --quiet
+          bash "$RUNNER_TEMP/spd-pipeline/scripts/lane-guard-pr.sh" "$LANE" "origin/$BASE_REF" | tee -a "$GITHUB_STEP_SUMMARY"
 
   # ── Rehearsal evidence — dev and design reach staging only rehearsed ──────
   # On a dev → staging or design → staging PR, the head commit needs a

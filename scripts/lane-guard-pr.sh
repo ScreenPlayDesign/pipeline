@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # The lane guard for a pull request, as ci.yml runs it in the project checkout.
 #
-#   lane-guard-pr.sh <head-branch> <base-ref>     e.g. design origin/staging
+#   lane-guard-pr.sh <head-branch> <base-ref>     e.g. design origin/staging, chore origin/prod
 #
 # Lists every path the PR changes since it left <base-ref> and passes them to
 # lane-guard.sh, with two rules a plain `git diff` would let slip:
 #   --no-renames   a move out of supabase/ lists the old path too, not only the new one
 #   base config    [lanes] dev_only is read from <base-ref>'s spd_config.toml, so a
 #                  PR cannot drop an entry and change that file in the same PR
+# The base branch (origin/ stripped) goes to lane-guard.sh as LANE_BASE.
 # Prints the reason (and, for dev, the migrations it carries); exits as lane-guard.sh does.
 set -euo pipefail
 
@@ -17,6 +18,7 @@ if [ $# -ne 2 ] || [ -z "$1" ] || [ -z "$2" ]; then
 fi
 LANE="$1"
 BASE="$2"
+export LANE_BASE="${BASE#origin/}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/lane-guard.XXXXXX")"

@@ -10,6 +10,13 @@ trap 'rm -rf "$WORK"' EXIT
 pass=0
 fail=0
 
+# checkb <expected exit> <config or '-'> <base> <branch> <files…>: check with LANE_BASE set
+checkb() {
+  local expected="$1" config="$2" base="$3"
+  shift 3
+  LANE_BASE="$base" check "$expected" "$config" "$@"
+}
+
 # check <expected exit> <config file contents, or '-' for no spd_config.toml> <branch> <files…>
 check() {
   local expected="$1" config="$2"
@@ -48,8 +55,15 @@ dev_only = ["src/App.tsx"]'
 
 check 0 -        dev        supabase/migrations/1.sql
 check 1 -        design     supabase/functions/x/index.ts
-check 0 -        design     src/App.tsx
-check 0 -        chore      supabase/migrations/1.sql
+check 1 -        design     src/App.tsx                 # design changes only design/
+check 0 -        design     design/guidebook.toml
+check 1 -        chore      README.md                   # chore no longer goes to staging
+checkb 0 - prod  chore      README.md package.json
+checkb 1 - prod  chore      supabase/migrations/1.sql
+checkb 1 - prod  chore      design/logo.svg
+checkb 1 "$DB_TS" prod chore src/types/db.ts
+checkb 0 - prod  staging    supabase/migrations/1.sql
+checkb 1 - prod  dev        src/a.ts
 check 1 -        feature-x  README.md
 check 1 -        proposal-2 src/a.ts
 check 1 -        data       src/a.ts
@@ -58,14 +72,14 @@ check 1 "$DB_TS" design     src/types/db.ts
 # Config edge cases: no file or no [lanes] means only supabase/ is dev-only;
 # multi-line arrays, comments, single quotes and directory entries are read;
 # a dev_only key in another section is not.
-check 0 -                      design src/types/db.ts
-check 0 '[project]
+check 1 -                      design src/types/db.ts
+check 1 '[project]
 name = "x"'                    design src/types/db.ts
-check 1 "$MULTI"               design src/App.tsx src/types/db.ts
+check 1 "$MULTI"               design design/a.md src/types/db.ts
 check 1 "$MULTI"               design generated/x.ts
-check 0 "$MULTI"               design src/App.tsx src/types/db.tsx
+check 0 "$MULTI"               design design/a.md design/b.tsx
 check 0 "$DB_TS"               dev    src/types/db.ts supabase/config.toml
-check 0 "$DB_TS"               design supabase-notes.md
+check 0 "$DB_TS"               design design/supabase-notes.md
 
 # ── lane-guard-pr.sh: the PR's own diff, against a real git history ─────────
 PR_GUARD="$HERE/lane-guard-pr.sh"
@@ -94,8 +108,8 @@ new_repo() {
 check_pr() {
   local expected="$1" want="$2" repo="$3" lane="$4" change="$5"
   local out code
-  (cd "$repo" && git checkout -q -B "$lane" staging && eval "$change" && git add -A && git commit -qm change) >/dev/null
-  out="$(cd "$repo" && bash "$PR_GUARD" "$lane" staging 2>&1)"
+  (cd "$repo" && git checkout -q -B "$lane" "${PR_BASE:-staging}" && eval "$change" && git add -A && git commit -qm change) >/dev/null
+  out="$(cd "$repo" && bash "$PR_GUARD" "$lane" "${PR_BASE:-staging}" 2>&1)"
   code=$?
   if [ "$code" = "$expected" ] && [ -n "$out" ] && { [ -z "$want" ] || printf '%s' "$out" | grep -qF "$want"; }; then
     pass=$((pass + 1))
@@ -112,12 +126,22 @@ check_pr 1 'supabase/migrations/001_init.sql' "$R" design 'mkdir -p docs && git 
 check_pr 1 'src/types/db.ts' "$R" design 'git mv src/types/db.ts src/types/schema.ts'
 # The dev_only list is the base's: dropping the entry in the same PR does not free the file.
 check_pr 1 'src/types/db.ts' "$R" design 'printf "[lanes]\ndev_only = []\n" > spd_config.toml && echo "// x" >> src/types/db.ts'
-check_pr 0 '' "$R" design 'echo "// x" >> src/App.tsx'
+check_pr 1 '' "$R" design 'echo "// x" >> src/App.tsx'
+check_pr 0 '' "$R" design 'mkdir -p design && echo x > design/guidebook.md'
+check_pr 1 '' "$R" chore 'echo x >> README.md'
 check_pr 0 'carries schema migrations: supabase/migrations/002_more.sql' "$R" dev 'echo "select 1;" > supabase/migrations/002_more.sql'
 check_pr 1 '' "$R" proposal-3 'echo "// x" >> src/App.tsx'
 # A base without spd_config.toml: only supabase/ is dev-only, whatever the head's config says.
 R2="$(new_repo no)"
-check_pr 0 '' "$R2" design 'printf "%s\n" "$DB_TS" > spd_config.toml && echo "// x" >> src/types/db.ts'
+(cd "$R2" && git checkout -q -B prod staging)
+PR_BASE=prod check_pr 0 '' "$R2" chore 'printf "%s\n" "$DB_TS" > spd_config.toml && echo "// x" >> src/types/db.ts'
+
+# A prod base: chore goes straight in, but never touches supabase/.
+(cd "$R" && git checkout -q -B prod staging)
+PR_BASE=prod check_pr 0 '' "$R" chore 'echo x >> README.md'
+PR_BASE=prod check_pr 1 'supabase/' "$R" chore 'echo "select 2;" > supabase/migrations/003.sql'
+PR_BASE=prod check_pr 1 'src/types/db.ts' "$R" chore 'echo "// x" >> src/types/db.ts'
+PR_BASE=prod check_pr 1 'Only staging and chore' "$R" design 'mkdir -p design && echo y > design/a.md'
 
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]

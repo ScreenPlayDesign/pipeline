@@ -1,15 +1,21 @@
 #!/usr/bin/env bash
-# Lane guard for a pull request into staging.
+# Lane guard for a pull request into staging or prod.
 #
 #   lane-guard.sh <head-branch> <changed-files…>
 #
-# Exits 0 when the lane may bring these files to staging, 1 when it may not,
-# and prints the reason either way. Rules (the lanes model, 2026-10-22):
-#   dev     may change anything, supabase/ included
-#   design  may not change supabase/ or any dev-only path
-#   chore   may change anything
-#   any other head branch (proposal-N, data, feature-x …) never PRs into
-#   staging, whatever it changes; proposals land on dev or design
+# The base branch comes from LANE_BASE (staging or prod; default staging).
+# Exits 0 when the lane may bring these files to that base, 1 when it may not,
+# and prints the reason either way. Rules (the lanes model, 2026-10-24):
+#   base staging
+#     dev     may change anything, supabase/ included
+#     design  may change only paths under design/
+#     chore   never goes to staging: it goes straight into prod
+#     any other head branch (proposal-N, data, feature-x …) never PRs into
+#     staging, whatever it changes; proposals land on dev or design
+#   base prod
+#     staging may bring anything
+#     chore   may change anything but supabase/, a dev-only path or design/
+#     any other head branch never PRs into prod
 #
 # Dev-only paths are supabase/ plus the `[lanes] dev_only = [...]` list in the
 # project's spd_config.toml (SPD_CONFIG, default ./spd_config.toml), e.g. the
@@ -23,6 +29,7 @@ if [ $# -lt 1 ] || [ -z "$1" ]; then
   exit 2
 fi
 LANE="$1"
+BASE="${LANE_BASE:-staging}"
 shift
 
 # Prints the dev_only entries of [lanes], one per line. Reads a one-line or
@@ -92,29 +99,57 @@ EOF
   return 1
 }
 
-case "$LANE" in
-  dev)
-    echo "The dev lane may change anything, supabase/ included."
-    exit 0 ;;
-  chore)
-    echo "The chore lane may change anything."
-    exit 0 ;;
-  design)
-    offending=""
-    for f in "$@"; do
-      if is_dev_only "$f"; then offending="$offending $f"; fi
-    done
-    if [ -n "$offending" ]; then
-      echo "The design lane may not change supabase/ or a dev-only path; that work rides the dev lane."
-      echo "Offending files:$offending"
-      exit 1
-    fi
-    echo "The design lane changes no dev-only path."
-    exit 0 ;;
-  proposal-*)
-    echo "'$LANE' is a proposal lane: it lands on dev or design by a reviewed pull request, never on staging."
-    exit 1 ;;
+case "$BASE" in
+  staging)
+    case "$LANE" in
+      dev)
+        echo "The dev lane may change anything, supabase/ included."
+        exit 0 ;;
+      design)
+        offending=""
+        for f in "$@"; do
+          case "$f" in design/*) ;; *) offending="$offending $f" ;; esac
+        done
+        if [ -n "$offending" ]; then
+          echo "The design lane may change only design/."
+          echo "Offending files:$offending"
+          exit 1
+        fi
+        echo "The design lane changes only design/."
+        exit 0 ;;
+      chore)
+        echo "The chore lane does not open pull requests into staging: chore goes straight into prod."
+        exit 1 ;;
+      proposal-*)
+        echo "'$LANE' is a proposal lane: it lands on dev or design by a reviewed pull request, never on staging."
+        exit 1 ;;
+      *)
+        echo "'$LANE' is not a lane. Only dev and design open pull requests into staging."
+        exit 1 ;;
+    esac ;;
+  prod)
+    case "$LANE" in
+      staging)
+        echo "Staging may bring anything into prod."
+        exit 0 ;;
+      chore)
+        offending=""
+        for f in "$@"; do
+          case "$f" in design/*) offending="$offending $f"; continue ;; esac
+          if is_dev_only "$f"; then offending="$offending $f"; fi
+        done
+        if [ -n "$offending" ]; then
+          echo "The chore lane may not change supabase/, a dev-only path or design/."
+          echo "Offending files:$offending"
+          exit 1
+        fi
+        echo "The chore lane changes no supabase/, dev-only or design/ path."
+        exit 0 ;;
+      *)
+        echo "'$LANE' may not open a pull request into prod. Only staging and chore open pull requests into prod."
+        exit 1 ;;
+    esac ;;
   *)
-    echo "'$LANE' is not a lane. Only dev, design and chore open pull requests into staging."
+    echo "'$BASE' is not a lane base. Pull requests go into staging or prod."
     exit 1 ;;
 esac
