@@ -3,7 +3,7 @@ name: dress-rehearsal
 # Performs every Gherkin scene against the project's staging site and staging
 # database, posts the result to screenplaydesign.com, and sets the commit
 # status `screenplay / dress rehearsal` — the check the staging → prod PR
-# requires. Spec: web-dashboard/docs/superpowers/specs/2026-10-14-rehearsal-gate-design.md
+# requires.
 #
 # Four jobs, so project code never runs where a token or the right to set
 # statuses lives:

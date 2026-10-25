@@ -1,71 +1,26 @@
 name: Deploy → Production
 
-# Canonical production rollback mechanism for every SPD project. Hosted
-# here — see ci.yml's header comment for why. workflow_call-only; the
-# calling repo's own deploy-prod.yml declares the actual
-# `push: branches: [prod]` + `workflow_dispatch` triggers.
+# Production rollback. workflow_call-only: the calling repo declares the
+# triggers (`workflow_dispatch` with `rollback-to-tag`; a push to `prod` runs
+# this too, and with no tag it does nothing).
 #
-# ⚠️ Gutted 2026-07-06, filename kept for continuity: this no longer builds
-# or deploys anything. Cloudflare Pages' own native Git integration builds
-# and deploys `prod` directly now (no GitHub Actions involved in the actual
-# deploy) — see web-dashboard's DEPLOYMENT_RUNBOOK.md and scripts/
-# cf-build.sh for where the build+deploy logic (and the shared-contracts.ts
-# sync, and build-info.json stamping this workflow used to do) live now.
-# deploy-dev.yml and deploy-staging.yml (no equivalent irreplaceable logic —
-# they only ever built an artifact for spd/github-app's relay.yml, itself
-# removed the same day) were deleted outright rather than trimmed.
+# A normal release does not run here. Cloudflare Pages builds `prod` on every
+# push; the release tag and the CHANGELOG.md / package.json bump are written by
+# spd/github-app (publishRelease) onto a disposable `release` branch, so `prod`
+# never gains a bookkeeping commit.
 #
-# ⚠️ Gutted FURTHER 2026-07-06, same day: the git tag + CHANGELOG.md/
-# package.json version-bump steps that used to live here moved to
-# spd/github-app's publishRelease() (see its own comment in handlers.ts),
-# triggered on every push to `prod` rather than run from this workflow.
-# Reason: pushing that bookkeeping commit straight onto `prod` (this
-# workflow's old behavior) meant `prod` was permanently one commit ahead of
-# `staging` — staging never received the bump — so the VERY NEXT
-# staging→prod PR always opened "out of date with base branch," every
-# single release, not occasionally. It also meant every release fired two
-# Cloudflare Pages builds in quick succession, and on the free-tier's
-# 1-concurrent-build-slot limit it was the FIRST one — the one that actually
-# mattered — that ended up getting skipped/superseded in practice, worse
-# than the "harmless, a few wasted build minutes" this file's comment used
-# to assume. publishRelease() now writes the tag + bump onto a disposable
-# `release` branch instead, reset to prod's tip fresh every cycle — `prod`
-# itself never gains the extra commit. This workflow's only remaining job is
-# what publishRelease() can't safely do unattended: the human-gated rollback
-# mechanism below.
-#
-# Honest trade-off worth naming: because publishRelease() fires immediately
-# on the push webhook (the moment a merge lands), it is NOT gated by this
-# workflow's `environment: production` approval below — that gate was
-# already effectively cosmetic with respect to the actual deploy even before
-# this change (Cloudflare's native integration also deploys unconditionally
-# on push, entirely outside this workflow), so moving the tag/changelog step
-# out from behind it isn't a new regression, just newly explicit. The
-# rollback path below is the one thing left that a human deliberately
-# approving still meaningfully gates, which is why it's the one thing kept
-# here rather than also moved into the webhook path.
-#
-# TWO human gates between staging and prod, still both kept for the PR leg:
-#   1. Reviewing and approving the staging → prod PR itself (spd/github-app's
-#      Worker opens/refreshes it, never auto-merges it).
-#   2. This workflow's own `environment: production` gate below — now
-#      specifically the rollback approval, not a release-bookkeeping gate.
-#
-# Rollback: history only ever moves FORWARD here — this workflow never
-# force-pushes or resets prod backward. A rollback is instead a normal new
-# commit whose tree happens to match an old tag's: pass rollback-to-tag, and
-# the "Restore rollback tree" step below overlays that old tag's files onto
-# the current prod tip as one new commit, pushed to `prod` — which
-# Cloudflare's native integration then picks up and deploys like any other
-# push, and which github-app's publishRelease() tags like any other push
-# too. "What's live" is always just whatever the newest tag says, even when
-# its content is old.
+# Rollback moves history forward only: it never force-pushes or resets `prod`.
+# Pass rollback-to-tag, and the "Restore rollback tree" step overlays that old
+# tag's files onto the current `prod` tip as one new commit and pushes it to
+# `prod`. Pages deploys it and publishRelease tags it like any other push.
+# What is live is always the newest tag, even when its content is old.
+# The job waits for the `production` environment's required reviewers.
 
 on:
   workflow_call:
     inputs:
       rollback-to-tag:
-        description: 'Old release tag to redeploy (e.g. v2026.07.01.1). Empty = no-op — there is nothing else for this workflow to do on a normal deploy anymore.'
+        description: 'Old release tag to redeploy (e.g. v2026.07.01.1). Empty: the workflow does nothing.'
         type: string
         default: ''
     secrets:
@@ -84,16 +39,7 @@ jobs:
     if: inputs.rollback-to-tag != ''
 
     # Job-level, not workflow-level: a top-level `concurrency:` on a
-    # workflow_call-only file makes GitHub try to serialize this reusable
-    # workflow's own run against this single job's identical group, which it
-    # reads as a self-deadlock — "Canceling since a deadlock was detected for
-    # concurrency group: 'deploy-prod' between a top level workflow and
-    # 'deploy'". Every run was hitting this, going all the way back — the
-    # caller (web-dashboard's deploy-prod.yml) deliberately has no
-    # concurrency block of its own, but that alone doesn't avoid the
-    # deadlock; it's this file's top-level declaration that caused it.
-    # Scoping the group to the job instead removes the ambiguity GitHub was
-    # tripping over.
+    # workflow_call-only file deadlocks against the job's own group.
     concurrency:
       group: deploy-prod
       cancel-in-progress: false   # never cancel a rollback mid-flight
@@ -107,23 +53,13 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0   # full history so the tag checkout + push below work
-          # PR_BOT_TOKEN, not the default token — github-actions[bot] isn't
-          # a selectable bypass-actor on most repos' branch protection, only
-          # installed Apps and real accounts are. Falling back to
-          # GITHUB_TOKEN keeps the job running even if the secret isn't set
-          # yet; it just means the push below fails against a protected prod
-          # branch until PR_BOT_TOKEN exists.
+          # PR_BOT_TOKEN, not the default token: github-actions[bot] cannot
+          # bypass branch protection. Without the secret the push below fails
+          # against a protected prod.
           token: ${{ secrets.PR_BOT_TOKEN || secrets.GITHUB_TOKEN }}
 
-      # Overlay the OLD tag's file tree onto the CURRENT prod tip as one new
-      # commit. Deliberately not `git reset`/`git checkout <tag>` as the
-      # job's ref — that would detach from prod's real tip and make the
-      # later `git push origin prod` a non-fast-forward (rejected) or
-      # require force-pushing (rewrites shared history, exactly what we're
-      # avoiding). This way prod's commit graph only ever grows forward —
-      # this commit's parent is genuinely prod's current tip, it just
-      # happens to restore old content — and Cloudflare's deploy + github-
-      # app's publishRelease() both react to it exactly like any other push.
+      # Overlay the old tag's file tree onto the current prod tip as one new
+      # commit, so the push is a fast-forward and prod's history only grows.
       - name: Restore rollback tree
         env:
           TAG: ${{ inputs.rollback-to-tag }}   # via env, never interpolated into the script

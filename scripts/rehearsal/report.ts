@@ -1,5 +1,5 @@
 // scripts/rehearsal/report.ts — reading Playwright's JSON report. The shapes
-// and helpers follow foundation-template/scripts/post-spd-results.ts.
+// and helpers follow .stage/scripts/post-spd-results.ts in foundation-template.
 import type { RunTest, TestStatus } from './verdict.ts'
 
 export interface Attachment { name: string; path?: string; body?: string; contentType: string }

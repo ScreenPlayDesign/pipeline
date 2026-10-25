@@ -114,7 +114,7 @@ function personaIdentity(fm: Record<string, string> | null, personaDir: string) 
 
 /**
  * Where a project keeps its cast: screenplay/cast/ (new skeleton), else personae/
- * at the repo root (since 2026-10-20), else the older screenplay/personae/.
+ * at the repo root, else screenplay/personae/.
  */
 export function personaeDirFor(screenplayRoot: string): string {
   return castDirFor(path.dirname(screenplayRoot))

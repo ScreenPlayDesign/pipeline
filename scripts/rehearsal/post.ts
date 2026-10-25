@@ -1,7 +1,7 @@
 // scripts/rehearsal/post.ts — post a staging dress rehearsal to the dashboard:
 // the screenplay (cast, setting, scenes), every scenario's result with its
 // evidence, and the gate verdict. The evidence upload follows
-// foundation-template/scripts/post-spd-results.ts.
+// .stage/scripts/post-spd-results.ts in foundation-template.
 import { existsSync, readFileSync, statSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { basename, extname, join } from 'node:path'

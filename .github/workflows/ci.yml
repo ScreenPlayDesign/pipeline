@@ -1,66 +1,28 @@
 name: ci
 
-# Canonical CI gate for every SPD project — plain typecheck + Playwright,
-# pass or fail by exit code, no AI/LLM involvement anywhere in this file on
-# purpose. Hosted HERE — in spd/pipeline, a repo that contains nothing but
-# this handful of reusable workflow files — not in any project repo, not in
-# foundation-template, and not in spd/github-app either.
-#
-# Two separate reasons this is its own repo, not folded into an existing one:
-#  1. foundation-template is itself starter code that gets cloned wholesale
-#     into new projects — CI logic that's supposed to apply platform-wide
-#     shouldn't be entangled with "a thing that gets copied to start a
-#     project," even referenced by pointer instead of copy-paste.
-#  2. github-app hosts the platform's orchestration service (webhook
-#     handling, standing-PR sync, provisioning) — real business logic, kept
-#     private on purpose. This repo has to be PUBLIC instead: some SPD
-#     projects live in GitHub organizations other than ScreenPlayDesign, and
-#     GitHub's reusable-workflow `uses:` mechanism only allows a cross-org
-#     reference when the source repo is public — a private repo's reusable
-#     workflows can only be called from within the same org. Keeping this
-#     repo to nothing but CI/deploy YAML (no secret values, no orchestration
-#     internals — secrets always resolve against the CALLER's own runtime,
-#     never live here) means going public costs nothing sensitive.
-#
-# Every consuming repo — foundation-template, web-dashboard, every future
-# client project, regardless of which org it lives in — keeps only a thin
-# run-ci.yml (or, for simple cases, a ci.yml that's just a trigger + this
-# call) that does nothing but declare its own trigger and its own
-# project-specific inputs, then calls:
+# The CI gate for a project: the lane guard, the rehearsal-evidence check,
+# TypeScript + build, and the Playwright visual gate. Pass or fail by exit
+# code; no AI is involved. A project calls this from a thin run-ci.yml that
+# declares its own trigger and inputs:
 #   uses: ScreenPlayDesign/pipeline/.github/workflows/ci.yml@<commit sha>
+#   with:    { pipeline-ref: <the same commit sha> }
 #   secrets: { SPD_API_TOKEN: ..., STAGING_SUPABASE_URL: ..., STAGING_SUPABASE_PUBLISHABLE_KEY: ... }
-# Pin a commit SHA and pass secrets by name — never @main, never `secrets: inherit`.
+# Pin a commit SHA and pass secrets by name: never @main, never `secrets: inherit`.
 #
-# `vars.*`/`secrets.*` referenced below resolve against whichever repo's
-# workflow run is actually calling this — the CALLER's own variables and
-# secrets, not this repo's — so one shared file serves every project's own
-# config without `inputs:` plumbing for values that already sit in the
-# caller's repo settings.
+# This repo is public so projects in any GitHub organisation can call it, and
+# holds no secret values: `vars.*` and `secrets.*` resolve against the CALLER's
+# repo.
 #
-# 2026-07-17: standardized on secrets.STAGING_SUPABASE_URL/
-# STAGING_SUPABASE_PUBLISHABLE_KEY as the one source for this — dropped
-# the earlier vars.VITE_SUPABASE_URL fallback. Two reasons: (1) a bare
-# VITE_SUPABASE_URL variable/secret name reads as ambiguous on a repo's
-# Settings page — nothing about the name says "this is staging," which
-# matters once you're used to scanning for STAGING_*/PROD_* pairs
-# elsewhere on that same page. (2) every calling repo already had
-# STAGING_SUPABASE_URL/STAGING_SUPABASE_ANON_KEY sitting there as
-# secrets from the original Supabase migration-deploy setup (supabase-
-# staging.yml), so this reuses existing values instead of asking every
-# project to create yet another differently-named copy of the same
-# staging credential. Secrets rather than Variables here on purpose too
-# — matches what was already in place, even though the anon/publishable
-# key itself isn't actually sensitive (RLS is the real access boundary,
-# not key secrecy — it ships in the public JS bundle regardless).
+# Jobs:
+#   lane-guard         PRs into staging or prod (rules below)
+#   rehearsal-evidence PRs into staging from dev or design
+#   typecheck-build    always
+#   visual-gate        every event except a PR into staging
+# A required check is named "<caller job id> / <job name>", e.g.
+# "ci / TypeScript + Build smoke test".
 #
-# Two parallel jobs, not one combined job — typecheck/build and the
-# Playwright visual gate run concurrently. The check names a repo's branch
-# protection needs in its required-status-checks list are whatever the
-# CALLING job-id composites with the names below, e.g.
-# "ci / TypeScript + Build smoke test" and "ci / Gherkin + Playwright visual
-# gate" if the caller names its job "ci". That composite-name change is the
-# one real cost of adopting this pattern — update branch protection in the
-# same sitting as switching a repo's workflow files over.
+# Bun: the version in the project's package.json "packageManager" ("bun@x.y.z"),
+# else SPD_BUN_DEFAULT below. Every workflow here uses the same rule.
 
 on:
   workflow_call:
@@ -97,9 +59,8 @@ env:
 
 jobs:
   # ── Lane guard — the pipeline's structural rules, enforced as a check ──────
-  # Runs on PRs whose BASE is staging or prod (a lane's standing PR). The
-  # rules (the lanes model, 2026-10-24) live in scripts/lane-guard.sh, tested
-  # by scripts/lane-guard.test.sh:
+  # Runs on PRs whose BASE is staging or prod. The
+  # rules live in scripts/lane-guard.sh (tests: scripts/lane-guard.test.sh):
   #
   #   into staging:
   #     dev     may change anything but design/ — supabase/ rides the dev lane only.
@@ -110,7 +71,7 @@ jobs:
   #   into prod:
   #     staging may bring anything.
   #     chore   may change anything but supabase/, a dev-only path (spd_config.toml
-  #             [lanes] dev_only, e.g. src/types/db.ts) or design/.
+  #             [lanes] dev_only, e.g. frontend/src/types/db.ts) or design/.
   #     any other head branch fails.
   #
   # The scripts are checked out from this repo at the commit the caller pins,
