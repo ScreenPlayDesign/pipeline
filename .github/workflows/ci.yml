@@ -229,10 +229,8 @@ jobs:
     name: Gherkin + Playwright visual gate
     runs-on: ${{ fromJSON(vars.SPD_RUNS_ON || '"ubuntu-latest"') }}
     timeout-minutes: 12
-    # Every event the caller declares (PRs into dev and design — the
-    # proposals — and into prod, pushes to prod) except PRs into staging:
-    # there the Rehearsal evidence check stands in for the scenes (until the
-    # stage replaces this gate).
+    # Every event the caller declares except PRs into staging: there the
+    # Rehearsal evidence check stands in for the scenes.
     if: "!(github.event_name == 'pull_request' && github.base_ref == 'staging')"
 
     steps:
@@ -284,25 +282,7 @@ jobs:
             review/artifacts/
           retention-days: 14
 
-      # Same migration detection as lane-guard, computed in-job (no `needs:`
-      # — lane-guard is skipped on push events, and a needs-dependency on a
-      # skipped job would skip this whole job with it).
-      - name: Detect schema migrations in this diff
-        id: schema
-        if: always() && github.event_name == 'pull_request'
-        env:
-          BASE_REF: ${{ github.base_ref }}
-        run: |
-          git fetch origin "$BASE_REF" --quiet || true
-          FILES=$(git diff --name-only "origin/$BASE_REF"...HEAD -- supabase/migrations/ 2>/dev/null | tr '\n' ' ' | sed 's/ $//')
-          echo "files=$FILES"                                    >> "$GITHUB_OUTPUT"
-          echo "carries=$([ -n "$FILES" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
-
-      # BRANCH is the PR *head* for lane PRs (the lane name is what the
-      # gate is keyed on: record_gate_report's p_branch → from_lane), and
-      # the pushed branch otherwise. CARRIES_MIGRATION/MIGRATION_FILES feed
-      # record_gate_report's p_carries_migration/p_migration_files so a
-      # migration-carrying dev gate stays pending for the cornerpost.
+      # BRANCH is the PR head for a PR (the lane name), else the pushed branch.
       - name: Post results to SPD dashboard
         if: always() && vars.SPD_API_URL != ''
         env:
@@ -313,8 +293,6 @@ jobs:
           GITHUB_RUN_ID:     ${{ github.run_id }}
           GITHUB_RUN_URL:    ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           PLAYWRIGHT_EXIT:   ${{ steps.playwright.outcome }}
-          CARRIES_MIGRATION: ${{ steps.schema.outputs.carries || 'false' }}
-          MIGRATION_FILES:   ${{ steps.schema.outputs.files }}
         run: |
           if [ -f ".stage/scripts/post-spd-results.ts" ]; then
             bun run .stage/scripts/post-spd-results.ts || echo "⚠  SPD result post failed (non-fatal)"
