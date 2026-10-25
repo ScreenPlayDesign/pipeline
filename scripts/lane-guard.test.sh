@@ -64,6 +64,8 @@ checkb 1 - prod  chore      design/logo.svg
 checkb 1 "$DB_TS" prod chore src/types/db.ts
 checkb 0 - prod  staging    supabase/migrations/1.sql
 checkb 1 - prod  dev        src/a.ts
+checkb 1 - prod  design     design/guidebook.toml
+checkb 1 - release dev      src/a.ts                    # an unknown base is refused
 check 1 -        feature-x  README.md
 check 1 -        proposal-2 src/a.ts
 check 1 -        data       src/a.ts
@@ -98,6 +100,7 @@ new_repo() {
     printf 'create table t (id int primary key, name text not null, created_at timestamptz);\n' > supabase/migrations/001_init.sql
     printf 'export type Db = { t: { id: number; name: string } }\n' > src/types/db.ts
     printf 'export const App = () => null\n' > src/App.tsx
+    mkdir -p design && printf '# a\n' > design/a.md
     if [ "$1" = yes ]; then printf '%s\n' "$DB_TS" > spd_config.toml; fi
     git add -A && git commit -qm base
   )
@@ -141,6 +144,10 @@ PR_BASE=prod check_pr 0 '' "$R2" chore 'printf "%s\n" "$DB_TS" > spd_config.toml
 PR_BASE=prod check_pr 0 '' "$R" chore 'echo x >> README.md'
 PR_BASE=prod check_pr 1 'supabase/' "$R" chore 'echo "select 2;" > supabase/migrations/003.sql'
 PR_BASE=prod check_pr 1 'src/types/db.ts' "$R" chore 'echo "// x" >> src/types/db.ts'
+PR_BASE=prod check_pr 1 'supabase/migrations/001_init.sql' "$R" chore 'mkdir -p docs && git mv supabase/migrations/001_init.sql docs/x.sql'
+PR_BASE=prod check_pr 1 'supabase/migrations/001_init.sql' "$R" chore 'git rm -q supabase/migrations/001_init.sql'
+PR_BASE=prod check_pr 1 'src/types/db.ts' "$R" chore 'printf "[lanes]\ndev_only = []\n" > spd_config.toml && echo "// x" >> src/types/db.ts'
+PR_BASE=prod check_pr 1 'design/a.md' "$R" chore 'mkdir -p docs && git mv design/a.md docs/a.md'
 PR_BASE=prod check_pr 1 'Only staging and chore' "$R" design 'mkdir -p design && echo y > design/a.md'
 
 echo "$pass passed, $fail failed"
