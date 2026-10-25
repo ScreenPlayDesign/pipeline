@@ -66,7 +66,7 @@ on:
   workflow_call:
     inputs:
       verify-shared-contracts:
-        description: 'Fail fast if src/types/shared-contracts.ts is missing (projects that sync generated Supabase edge-function types into the frontend)'
+        description: 'Fail fast if shared-contracts.ts is missing from frontend/src/types/ (or src/types/ in the old layout) (projects that sync generated Supabase edge-function types into the frontend)'
         type: boolean
         default: false
       target-url:
@@ -210,8 +210,8 @@ jobs:
       - name: Verify shared-contracts.ts present
         if: inputs.verify-shared-contracts
         run: |
-          if [[ ! -f src/types/shared-contracts.ts ]]; then
-            echo "❌  src/types/shared-contracts.ts is missing."
+          if [[ ! -f frontend/src/types/shared-contracts.ts && ! -f src/types/shared-contracts.ts ]]; then
+            echo "❌  shared-contracts.ts is missing (looked in frontend/src/types/ and src/types/)."
             echo "    Run sync-contracts.sh (or the deploy workflow's sync step) and commit the result."
             exit 1
           fi
