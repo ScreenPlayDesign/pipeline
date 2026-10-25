@@ -54,6 +54,8 @@ dev_only = [
 dev_only = ["src/App.tsx"]'
 
 check 0 -        dev        supabase/migrations/1.sql
+check 1 -        dev        design/guidebook.toml       # the dev lane may change anything but design/
+check 1 -        dev        src/a.ts design/logo.svg
 check 1 -        design     supabase/functions/x/index.ts
 check 1 -        design     src/App.tsx                 # design changes only design/
 check 0 -        design     design/guidebook.toml
@@ -133,6 +135,7 @@ check_pr 1 '' "$R" design 'echo "// x" >> src/App.tsx'
 check_pr 0 '' "$R" design 'mkdir -p design && echo x > design/guidebook.md'
 check_pr 1 '' "$R" chore 'echo x >> README.md'
 check_pr 0 'carries schema migrations: supabase/migrations/002_more.sql' "$R" dev 'echo "select 1;" > supabase/migrations/002_more.sql'
+check_pr 1 'design/a.md' "$R" dev 'echo y >> design/a.md'
 check_pr 1 '' "$R" proposal-3 'echo "// x" >> src/App.tsx'
 # A base without spd_config.toml: only supabase/ is dev-only, whatever the head's config says.
 R2="$(new_repo no)"

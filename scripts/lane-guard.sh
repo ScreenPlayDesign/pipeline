@@ -5,9 +5,9 @@
 #
 # The base branch comes from LANE_BASE (staging or prod; default staging).
 # Exits 0 when the lane may bring these files to that base, 1 when it may not,
-# and prints the reason either way. Rules (the lanes model, 2026-10-24):
+# and prints the reason either way. Rules:
 #   base staging
-#     dev     may change anything, supabase/ included
+#     dev     may change anything but design/, supabase/ included
 #     design  may change only paths under design/
 #     chore   never goes to staging: it goes straight into prod
 #     any other head branch (proposal-N, data, feature-x …) never PRs into
@@ -19,7 +19,7 @@
 #
 # Dev-only paths are supabase/ plus the `[lanes] dev_only = [...]` list in the
 # project's spd_config.toml (SPD_CONFIG, default ./spd_config.toml), e.g. the
-# generated src/types/db.ts. An entry ending in / covers that directory; any
+# generated frontend/src/types/db.ts. An entry ending in / covers that directory; any
 # other entry covers that file, or that directory when it is one. No file, no
 # [lanes] section or no dev_only key means only supabase/ is dev-only.
 set -euo pipefail
@@ -103,7 +103,16 @@ case "$BASE" in
   staging)
     case "$LANE" in
       dev)
-        echo "The dev lane may change anything, supabase/ included."
+        offending=""
+        for f in "$@"; do
+          case "$f" in design/*) offending="$offending $f" ;; esac
+        done
+        if [ -n "$offending" ]; then
+          echo "The dev lane may change anything but design/."
+          echo "Offending files:$offending"
+          exit 1
+        fi
+        echo "The dev lane changes nothing under design/."
         exit 0 ;;
       design)
         offending=""
