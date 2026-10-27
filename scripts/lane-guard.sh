@@ -18,10 +18,11 @@
 #     any other head branch never PRs into prod
 #
 # Dev-only paths are supabase/ plus the `[lanes] dev_only = [...]` list in the
-# project's spd_config.toml (SPD_CONFIG, default ./spd_config.toml), e.g. the
-# generated frontend/src/types/db.ts. An entry ending in / covers that directory; any
+# project's spd_config.toml (SPD_CONFIG, default ./spd_config.toml), read by
+# spd-config.ts, e.g. the generated frontend/src/types/db.ts. An entry ending in / covers that directory; any
 # other entry covers that file, or that directory when it is one. No file, no
-# [lanes] section or no dev_only key means only supabase/ is dev-only.
+# [lanes] section or no dev_only key means only supabase/ is dev-only; a file spd-config.ts
+# cannot read refuses the lane.
 set -euo pipefail
 
 if [ $# -lt 1 ] || [ -z "$1" ]; then
@@ -32,60 +33,41 @@ LANE="$1"
 BASE="${LANE_BASE:-staging}"
 shift
 
-# Prints the dev_only entries of [lanes], one per line. Reads a one-line or
-# multi-line string array; # comments outside quotes are ignored.
-dev_only_entries() {
-  local config="${SPD_CONFIG:-spd_config.toml}"
+# The dev_only entries of [lanes], read once by spd-config.ts (the pipeline's hash-checked copy of the
+# client's schema, the one reader of spd_config.toml). The reader runs from the pipeline's own folder,
+# so a project's bunfig.toml or .env never loads. Exit 1 with "is not set in" means the key is absent:
+# no entries. Any other failure means the guard cannot know the dev-only paths, so it refuses (exit 1)
+# and says why, rather than guess that only supabase/ is dev-only.
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DEV_ONLY_LOADED=0
+DEV_ONLY=""
+load_dev_only() {
+  DEV_ONLY_LOADED=1
+  local config="${SPD_CONFIG:-spd_config.toml}" out
   [ -f "$config" ] || return 0
-  awk '
-    # The line up to the first # outside a quoted string.
-    function uncomment(s,   i, c, q, out) {
-      q = ""; out = ""
-      for (i = 1; i <= length(s); i++) {
-        c = substr(s, i, 1)
-        if (q == "" && c == "#") break
-        if (q == "" && (c == "\"" || c == "\047")) q = c
-        else if (q != "" && c == q) q = ""
-        out = out c
-      }
-      return out
-    }
-    # True when s holds a ] outside a quoted string.
-    function closes(s,   i, c, q) {
-      q = ""
-      for (i = 1; i <= length(s); i++) {
-        c = substr(s, i, 1)
-        if (q == "" && c == "]") return 1
-        if (q == "" && (c == "\"" || c == "\047")) q = c
-        else if (q != "" && c == q) q = ""
-      }
-      return 0
-    }
-    function emit(s) {
-      while (match(s, /"[^"]*"|\047[^\047]*\047/)) {
-        print substr(s, RSTART + 1, RLENGTH - 2)
-        s = substr(s, RSTART + RLENGTH)
-      }
-    }
-    { line = uncomment($0) }
-    collecting {
-      buf = buf " " line
-      if (closes(line)) { emit(buf); collecting = 0 }
-      next
-    }
-    line ~ /^[ \t]*\[/ { in_lanes = (line ~ /^[ \t]*\[[ \t]*lanes[ \t]*\][ \t]*$/); next }
-    in_lanes && line ~ /^[ \t]*dev_only[ \t]*=/ {
-      buf = line
-      sub(/^[^=]*=/, "", buf)
-      if (closes(buf)) emit(buf); else collecting = 1
-    }
-  ' "$config"
+  config="$(cd "$(dirname "$config")" && pwd)/$(basename "$config")"
+  if ! command -v bun >/dev/null 2>&1; then
+    echo "Cannot read spd_config.toml (the guard needs bun): the dev-only paths are unknown."
+    exit 1
+  fi
+  if out="$(cd "$HERE" && bun --no-env-file spd-config.ts get lanes.dev_only --file "$config" 2>&1)"; then
+    DEV_ONLY="$out"
+  else
+    case "$out" in
+      *"is not set in"*) ;;
+      *) echo "Cannot read spd_config.toml: the dev-only paths are unknown."
+         printf '%s\n' "$out" | sed 's/^/  /'
+         exit 1 ;;
+    esac
+  fi
+  return 0
 }
 
 # True when the file is under supabase/ or a dev-only entry.
 is_dev_only() {
   local file="$1" entry
   case "$file" in supabase/*) return 0 ;; esac
+  [ "$DEV_ONLY_LOADED" -eq 1 ] || load_dev_only
   while IFS= read -r entry; do
     [ -n "$entry" ] || continue
     case "$entry" in
@@ -94,7 +76,7 @@ is_dev_only() {
           case "$file" in "$entry"/*) return 0 ;; esac ;;
     esac
   done <<EOF
-$(dev_only_entries)
+$DEV_ONLY
 EOF
   return 1
 }

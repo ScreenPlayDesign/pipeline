@@ -1,18 +1,22 @@
 // scripts/rehearsal/config.ts — what the rehearsal needs from spd_config.toml.
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { getKey, parseSpdConfig } from '../spd-config.ts'
 
 export interface RehearsalConfig { slug: string; stagingUrl: string }
 
+/** Reads spd_config.toml through spd-config.ts, the one reader (a version 1 file loads through its in-memory migration). */
 export function readProjectConfig(root: string): RehearsalConfig {
-  const raw = Bun.TOML.parse(readFileSync(join(root, 'spd_config.toml'), 'utf8')) as {
-    app?: { name?: string }
-    env?: { staging?: { url?: string } }
+  const file = join(root, 'spd_config.toml')
+  const { config, problems } = parseSpdConfig(readFileSync(file, 'utf8'), { projectRoot: root })
+  if (!config) {
+    const errors = problems.filter((p) => p.severity === 'error').map((p) => `${p.message} (${p.fix})`)
+    throw new Error(`spd_config.toml cannot be read: ${errors.join('; ')}`)
   }
-  const slug = raw.app?.name
-  const stagingUrl = raw.env?.staging?.url
-  if (!slug) throw new Error('spd_config.toml has no [app] name')
-  if (!stagingUrl) throw new Error('spd_config.toml has no [env.staging] url')
+  const slug = getKey(config, 'app.name')
+  const stagingUrl = getKey(config, 'env.staging.url')
+  if (typeof slug !== 'string' || !slug) throw new Error('spd_config.toml has no [app] name')
+  if (typeof stagingUrl !== 'string' || !stagingUrl) throw new Error('spd_config.toml has no [env.staging] url')
   return { slug, stagingUrl: stagingUrl.replace(/\/$/, '') }
 }
 

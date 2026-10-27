@@ -28,3 +28,31 @@ test('PROJECT_ROOT overrides the working directory', () => {
   expect(projectRoot({ PROJECT_ROOT: '/w/project' } as never)).toBe('/w/project')
   expect(projectRoot({} as never)).toBe(process.cwd())
 })
+
+const V2 = `schema = 2
+
+[app]
+name        = "fastnacht-lancaster"
+description = "A festival site"
+kind        = "local"
+shape       = "app"
+`
+
+test('reads a version 2 file through spd-config.ts', () => {
+  writeFileSync(join(dir, 'spd_config.toml'), `${V2}
+[env.staging]
+url = "https://staging.example.org/"
+`)
+  expect(readProjectConfig(dir)).toEqual({ slug: 'fastnacht-lancaster', stagingUrl: 'https://staging.example.org' })
+})
+
+test('refuses a file the schema refuses, with the schema reader\'s message', () => {
+  writeFileSync(join(dir, 'spd_config.toml'), `${V2}
+[paths]
+frontend = "frontend"
+
+[env.staging]
+url = "https://staging.example.org"
+`)
+  expect(() => readProjectConfig(dir)).toThrow(/paths/)
+})

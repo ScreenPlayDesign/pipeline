@@ -38,10 +38,13 @@ check() {
   fi
 }
 
-DB_TS='[lanes]
+DB_TS='[app]
+name = "x"
+
+[lanes]
 dev_only = ["src/types/db.ts"]'
 
-MULTI='[project]
+MULTI='[app]
 name = "x"   # a comment
 
 [lanes]
@@ -73,11 +76,49 @@ check 1 -        proposal-2 src/a.ts
 check 1 -        data       src/a.ts
 check 1 "$DB_TS" design     src/types/db.ts
 
+# The guard reads dev_only through spd-config.ts, the one reader of spd_config.toml: a version 2
+# file in a spelling the old awk could not follow (a dotted key at the top) still lists its entries,
+# and a file the reader refuses refuses the lane, saying why.
+V2='schema = 2
+
+[app]
+name        = "x"
+description = "A site"
+kind        = "local"
+shape       = "app"
+
+[lanes]
+dev_only = ["src/types/db.ts"]'
+V2_DOTTED='schema = 2
+lanes.dev_only = ["src/types/db.ts"]
+
+[app]
+name        = "x"
+description = "A site"
+kind        = "local"
+shape       = "app"'
+check 1 "$V2"                  design src/types/db.ts
+check 0 "$V2"                  dev    src/types/db.ts
+checkb 1 "$V2_DOTTED" prod chore src/types/db.ts      # the lane guard reads dev_only through spd-config.ts
+checkb 0 "$V2_DOTTED" prod chore README.md
+checkb 1 "$V2" prod chore supabase/migrations/1.sql
+check_says() {   # check_says <config> <text the guard prints> <branch> <files…>
+  local config="$1" want="$2" dir out code
+  shift 2
+  dir="$(mktemp -d "$WORK/case.XXXXXX")"
+  printf '%s\n' "$config" > "$dir/spd_config.toml"
+  out="$(cd "$dir" && bash "$GUARD" "$@" 2>&1)"
+  code=$?
+  if [ "$code" = 1 ] && printf '%s' "$out" | grep -qF "$want"; then pass=$((pass + 1)); echo "ok   says '$want'"
+  else fail=$((fail + 1)); echo "FAIL expected \"$want\"; output: ${out:-<none>}"; fi
+}
+LANE_BASE=prod check_says 'schema = 2' 'Cannot read spd_config.toml' chore src/a.ts
+
 # Config edge cases: no file or no [lanes] means only supabase/ is dev-only;
 # multi-line arrays, comments, single quotes and directory entries are read;
 # a dev_only key in another section is not.
 check 1 -                      design src/types/db.ts
-check 1 '[project]
+check 1 '[app]
 name = "x"'                    design src/types/db.ts
 check 1 "$MULTI"               design design/a.md src/types/db.ts
 check 1 "$MULTI"               design generated/x.ts

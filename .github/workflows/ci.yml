@@ -107,9 +107,14 @@ jobs:
           persist-credentials: false
       - name: Move the pipeline out of the project checkout
         run: mv .spd-pipeline "$RUNNER_TEMP/spd-pipeline"
+      # lane-guard.sh reads [lanes] dev_only with the pipeline's own spd-config.ts, so it needs Bun.
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: ${{ env.SPD_BUN_DEFAULT }}
+          no-cache: true
       # lane-guard-pr.sh diffs with --no-renames (a move out of supabase/
       # still counts) and reads [lanes] dev_only from the base's
-      # spd_config.toml, not the PR's own. A file changed only by a release
+      # spd_config.toml (through scripts/spd-config.ts), not the PR's own. A file changed only by a release
       # bump commit (subject and content) is left out.
       - name: Check the lane's diff against the lane rules
         shell: bash
