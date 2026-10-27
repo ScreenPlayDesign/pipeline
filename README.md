@@ -8,9 +8,22 @@ ScreenPlayDesign project calls. Each project keeps thin trigger files
 This repo is public so projects in any GitHub organisation can call it (a
 cross-organisation `uses:` needs a public source). It holds no secret values:
 `secrets.*` and `vars.*` resolve against the calling repo. Orchestration lives
-in `ScreenPlayDesign/github-app` (private); project starter code lives in
-`ScreenPlayDesign/foundation-template`. Cloudflare Pages builds and deploys
-`dev`, `staging` and `prod` from Git; no workflow here deploys.
+in `ScreenPlayDesign/github-app` (SPD Bot, private); project starter code lives
+in `ScreenPlayDesign/foundation-template`. Cloudflare Pages builds and deploys
+from Git; no workflow here deploys.
+
+**The lanes.** An app repo has the lanes chore, dev, design, staging and prod,
+plus `release` (cut by SPD Bot) and `proposal-1` to `proposal-8`. There is no
+`main`. A site repo (`<project>-site`) has chore, design, staging and prod.
+The guard below is written for the app's lanes; a site's rules are planned
+(the project model, 2026-10-27).
+
+**How the pipeline reads `spd_config.toml`.** Only through
+`scripts/spd-config.ts`, a byte-for-byte copy of the client's one schema
+(version 2), checked by its hash. The lane guard reads `[lanes] dev_only`
+with it; the rehearsal reads the app name and `[env.staging] url` with it
+(`scripts/rehearsal/config.ts`). The platform's database is the truth and the
+file is its copy. A version 1 file loads through an in-memory migration.
 
 **Where jobs run.** Every job uses
 `runs-on: ${{ fromJSON(vars.SPD_RUNS_ON || '"ubuntu-latest"') }}`: GitHub's hosted
@@ -24,8 +37,8 @@ machines unless the organisation variable `SPD_RUNS_ON` names others. Set it to
 |---|---|---|
 | `ci.yml` | `pull_request` on staging, prod (and any other branch the caller lists); `push` on prod for some projects | `lane-guard` on PRs into staging or prod (`scripts/lane-guard-pr.sh` → `lane-guard.sh`). `Rehearsal evidence` on PRs into staging from `dev` or `design`: the head commit needs `spd/local-rehearsal` or `spd/stage-rehearsal` in state `success`. `TypeScript + Build smoke test` always. `Gherkin + Playwright visual gate` on every event except a PR into staging; it posts results with the project's `.stage/scripts/post-spd-results.ts` (or `scripts/post-spd-results.ts` in older projects). Callers pass `pipeline-ref` and grant `contents: read` and `statuses: read`. |
 | `dress-rehearsal.yml` | `push` on staging, `workflow_dispatch` | Waits until staging serves the commit and its migrations, resets the cast, performs every Gherkin scene against staging (with `.stage/config/playwright.config.ts`, or the root `playwright.config.ts` in older projects), posts scenes, results, screenshots and the verdict to screenplaydesign.com, and sets the commit status `screenplay / dress rehearsal`. Scenarios tagged `@later` never block. Four jobs (`start`, `reset`, `perform`, `verdict`) so project code never runs where a token or `statuses: write` is held. Callers grant `contents: read` and `statuses: write`. |
-| `deploy-prod.yml` | `workflow_dispatch` with `rollback-to-tag` (without a tag it does nothing) | Rollback only. Overlays an old release tag's file tree onto the `prod` tip as one new forward commit; never force-pushes. Waits for the `production` environment's reviewers. Releases (tag, CHANGELOG, version bump) are written by `github-app`, not here. |
-| `approve-screenshots.yml` | `workflow_dispatch` | Renders every scene on Linux against staging and commits new or changed `*-linux.png` baselines to the `design` lane. Needs `PR_BOT_TOKEN`. |
+| `deploy-prod.yml` | `workflow_dispatch` with `rollback-to-tag` (without a tag it does nothing) | Rollback only. Overlays an old release tag's file tree onto the `prod` tip as one new forward commit; never force-pushes. Waits for the `production` environment's reviewers. The release (tag, CHANGELOG, version bump) is cut by SPD Bot (`github-app`) on the `release` branch once `supabase-prod.yml` has succeeded on `prod`'s tip, never by a workflow here. |
+| `approve-screenshots.yml` | `workflow_dispatch` | Reads `spd_config.toml`, then renders every scene on Linux against staging and commits new or changed `*-linux.png` baselines to the `design` lane. Needs `PR_BOT_TOKEN`. |
 
 ## The lane guard
 
