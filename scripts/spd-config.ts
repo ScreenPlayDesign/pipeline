@@ -1,4 +1,4 @@
-// copied from client/shared/spdConfig.ts sha256:8a3538924b1603af33060cf3e589e3924912a66533c1d81e79d79d139a29bc55 — do not edit; run make sync-spd-config in client
+// copied from client/shared/spdConfig.ts sha256:017c0a2445a1f79ad0f422c69fa9f84b09d7714e935ab7c842fa75123fd18816 — do not edit; run make sync-spd-config in client
 // The one schema for every project's spd_config.toml (version 2).
 //
 // Self-contained on purpose: the only runtime dependencies are Bun.TOML and
@@ -22,7 +22,7 @@ export interface SpdConfigV2 {
   env?: { staging?: { url: string }; prod?: { url: string } }
   companion?: { repo: string; design?: string }
   lanes?: { dev_only?: string[] }
-  gateway?: { behaviour_paths?: string[] }
+  gateway?: { behaviour_paths?: string[]; rehearse_first?: boolean }
   rehearsal?: { required?: boolean }
   layer?: { kind: 'foundation' | 'angle' | 'implementation' | 'project'; angle?: string; upstream?: string }
 }
@@ -134,7 +134,7 @@ const SECTIONS: Record<string, Record<string, Check>> = {
   },
   companion: { repo: str, design: str },
   lanes: { dev_only: strList },
-  gateway: { behaviour_paths: strList },
+  gateway: { behaviour_paths: strList, rehearse_first: bool },
   rehearsal: { required: bool },
   layer: {
     kind: oneOf('foundation', 'angle', 'implementation', 'project'),
