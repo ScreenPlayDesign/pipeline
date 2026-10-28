@@ -245,5 +245,17 @@ check_rel 1 'package.json' "$R5" design 'Design: a new colour' 'echo x > design/
 R6="$(new_release_repo 'docs: release notes' "$BUMP")"
 check_rel 1 'CHANGELOG.md' "$R6" design 'Design: a new colour' 'echo x > design/colour.md'
 
+
+# A migration lives only in supabase/migrations/ (Jon, 2026-10-28), on every lane and base.
+check 1 - dev db/migrations/001_init.sql
+check 1 - dev migrations/20261028_add_users.sql
+check 1 - dev frontend/migrations/002_x.sql
+check 1 - dev supabase/001_loose.sql
+check 1 - dev supabase/schema/migrations/003_nested.sql
+checkb 1 - prod staging db/migrations/001_init.sql
+check 0 - dev supabase/migrations/001_init.sql supabase/tests/schema.sql
+check 0 - dev supabase/seed.sql supabase/tests/a.sql supabase/migrations/undo/001_init.down.sql
+check 0 - dev scripts/report.sql
+
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]

@@ -64,6 +64,8 @@ jobs:
   #
   #   into staging:
   #     dev     may change anything but design/ — supabase/ rides the dev lane only.
+  #     every lane: a migration lives only in supabase/migrations/ (a .sql in another migrations/
+  #             folder, or named like one outside supabase/migrations/ and supabase/tests/, fails).
   #     design  may change only design/.
   #     chore   never goes to staging; it goes straight into prod.
   #     any other head branch fails, whatever it carries — proposal-N lands

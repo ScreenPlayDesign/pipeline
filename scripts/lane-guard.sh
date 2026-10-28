@@ -17,6 +17,10 @@
 #     chore   may change anything but supabase/, a dev-only path or design/
 #     any other head branch never PRs into prod
 #
+# On every lane and base, a migration lives only in supabase/migrations/ (Jon, 2026-10-28): a .sql
+# file in any other migrations/ folder, or one named like a migration (it starts with a digit)
+# anywhere but supabase/migrations/ and supabase/tests/, fails the guard.
+#
 # Dev-only paths are supabase/ plus the `[lanes] dev_only = [...]` list in the
 # project's spd_config.toml (SPD_CONFIG, default ./spd_config.toml), read by
 # spd-config.ts, e.g. the generated frontend/src/types/db.ts. An entry ending in / covers that directory; any
@@ -81,6 +85,28 @@ EOF
   return 1
 }
 
+# A migration outside supabase/migrations/ is refused on every lane, whatever the base: checked where a
+# lane would otherwise pass, so a lane's own refusal speaks first.
+refuse_misplaced() {
+  local f misplaced=""
+  for f in "$@"; do
+    case "$f" in
+      supabase/migrations/*|supabase/tests/*) continue ;;
+      *.sql) ;;
+      *) continue ;;
+    esac
+    case "/$f" in
+      */migrations/*) misplaced="$misplaced $f"; continue ;;
+    esac
+    case "$(basename "$f")" in [0-9]*) misplaced="$misplaced $f" ;; esac
+  done
+  if [ -n "$misplaced" ]; then
+    echo "A migration lives only in supabase/migrations/."
+    echo "Misplaced files:$misplaced"
+    exit 1
+  fi
+}
+
 case "$BASE" in
   staging)
     case "$LANE" in
@@ -95,6 +121,7 @@ case "$BASE" in
           exit 1
         fi
         echo "The dev lane changes nothing under design/."
+        refuse_misplaced "$@"
         exit 0 ;;
       design)
         offending=""
@@ -107,6 +134,7 @@ case "$BASE" in
           exit 1
         fi
         echo "The design lane changes only design/."
+        refuse_misplaced "$@"
         exit 0 ;;
       chore)
         echo "The chore lane does not open pull requests into staging: chore goes straight into prod."
@@ -122,6 +150,7 @@ case "$BASE" in
     case "$LANE" in
       staging)
         echo "Staging may bring anything into prod."
+        refuse_misplaced "$@"
         exit 0 ;;
       chore)
         offending=""
@@ -135,6 +164,7 @@ case "$BASE" in
           exit 1
         fi
         echo "The chore lane changes no supabase/, dev-only or design/ path."
+        refuse_misplaced "$@"
         exit 0 ;;
       *)
         echo "'$LANE' may not open a pull request into prod. Only staging and chore open pull requests into prod."
