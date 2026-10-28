@@ -175,7 +175,7 @@ check_pr 1 'src/types/db.ts' "$R" design 'printf "[lanes]\ndev_only = []\n" > sp
 check_pr 1 '' "$R" design 'echo "// x" >> src/App.tsx'
 check_pr 0 '' "$R" design 'mkdir -p design && echo x > design/guidebook.md'
 check_pr 1 '' "$R" chore 'echo x >> README.md'
-check_pr 0 'carries schema migrations: supabase/migrations/002_more.sql' "$R" dev 'echo "select 1;" > supabase/migrations/002_more.sql'
+check_pr 0 'carries schema migrations: supabase/migrations/002_more.sql' "$R" dev "printf -- '-- forward-only: reads only\\nselect 1;\\n' > supabase/migrations/002_more.sql"
 check_pr 1 'design/a.md' "$R" dev 'echo y >> design/a.md'
 check_pr 1 '' "$R" proposal-3 'echo "// x" >> src/App.tsx'
 # A base without spd_config.toml: only supabase/ is dev-only, whatever the head's config says.
@@ -256,6 +256,17 @@ checkb 1 - prod staging db/migrations/001_init.sql
 check 0 - dev supabase/migrations/001_init.sql supabase/tests/schema.sql
 check 0 - dev supabase/seed.sql supabase/tests/a.sql supabase/migrations/undo/001_init.down.sql
 check 0 - dev scripts/report.sql
+
+
+# Migrations, by content (Jon, 2026-10-28): an applied migration never changes; a new one brings its
+# undo file or says why it is forward-only.
+MR="$(new_repo no)"
+check_pr 1 'never changes' "$MR" dev "printf 'alter table t add column x int;\n' >> supabase/migrations/001_init.sql"
+check_pr 1 'never changes' "$MR" dev "git rm -q supabase/migrations/001_init.sql"
+check_pr 1 'undo/002_add.down.sql' "$MR" dev "printf 'alter table t add column a int;\n' > supabase/migrations/002_add.sql"
+check_pr 0 '' "$MR" dev "printf 'alter table t add column a int;\n' > supabase/migrations/002_add.sql && mkdir -p supabase/migrations/undo && printf 'alter table t drop column a;\n' > supabase/migrations/undo/002_add.down.sql"
+check_pr 0 '' "$MR" dev "printf -- '-- forward-only: drops nothing, adds a nullable column\nalter table t add column a int;\n' > supabase/migrations/002_add.sql"
+check_pr 1 'forward-only' "$MR" dev "printf -- '-- forward-only:\nalter table t add column a int;\n' > supabase/migrations/002_add.sql"
 
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]

@@ -16,6 +16,10 @@
 #                  commit changes CHANGELOG.md and/or package.json, the latter
 #                  only on its "version" line. Any other commit (a look-alike
 #                  subject included) that touches a file keeps it judged.
+# Then, when the lanes allow the files, the migrations by content (Jon, 2026-10-28):
+#   an applied migration never changes   a supabase/migrations/*.sql edited or deleted fails: add a new one
+#   a new migration can be undone        it brings supabase/migrations/undo/<name>.down.sql, or says
+#                                        `-- forward-only: <reason>` on a line of its own
 # The base branch (origin/ stripped) goes to lane-guard.sh as LANE_BASE.
 # Prints the reason (and, for dev, the migrations it carries); exits as lane-guard.sh does.
 set -euo pipefail
@@ -85,6 +89,29 @@ set +e
 SPD_CONFIG="$TMP/spd_config.toml" bash "$HERE/lane-guard.sh" "$LANE" ${FILES[@]+"${FILES[@]}"}
 CODE=$?
 set -e
+
+if [ "$CODE" -eq 0 ]; then
+  CHANGED=$(git diff --no-renames --diff-filter=MD --name-only "$BASE"...HEAD -- 'supabase/migrations/*.sql' | grep -v '^supabase/migrations/undo/' || true)
+  if [ -n "$CHANGED" ]; then
+    echo "An applied migration never changes: add a new migration instead."
+    echo "Changed or deleted: $(printf '%s' "$CHANGED" | tr '\n' ' ')"
+    CODE=1
+  fi
+  MISSING=""
+  while IFS= read -r m; do
+    [ -n "$m" ] || continue
+    case "$m" in supabase/migrations/*/*) continue ;; esac
+    name="$(basename "$m" .sql)"
+    if git diff --no-renames --name-only "$BASE"...HEAD | grep -qxF "supabase/migrations/undo/$name.down.sql"; then continue; fi
+    if git show "HEAD:$m" | grep -qE '^--[[:space:]]*forward-only:[[:space:]]*[^[:space:]]'; then continue; fi
+    MISSING="$MISSING $m (add supabase/migrations/undo/$name.down.sql, or a line: -- forward-only: <why>)"
+  done < <(git diff --no-renames --diff-filter=A --name-only "$BASE"...HEAD -- 'supabase/migrations/*.sql')
+  if [ -n "$MISSING" ]; then
+    echo "A new migration brings its undo file or says why it is forward-only."
+    echo "Missing:$MISSING"
+    CODE=1
+  fi
+fi
 
 if [ "$CODE" -eq 0 ] && [ "$LANE" = dev ]; then
   MIGRATIONS=$(git diff --no-renames --name-only "$BASE"...HEAD -- supabase/migrations/ | tr '\n' ' ' | sed 's/ $//')
