@@ -62,7 +62,10 @@ check 1 -        dev        src/a.ts design/logo.svg
 check 1 -        design     supabase/functions/x/index.ts
 check 1 -        design     src/App.tsx                 # design changes only design/
 check 0 -        design     design/guidebook.toml
-check 1 -        chore      README.md                   # chore no longer goes to staging
+check 0 -        chore      README.md package.json      # chore goes to staging as well as prod
+check 1 -        chore      supabase/migrations/1.sql   # with the limits it has into prod
+check 1 -        chore      design/logo.svg
+check 1 "$DB_TS" chore      src/types/db.ts
 checkb 0 - prod  chore      README.md package.json
 checkb 1 - prod  chore      supabase/migrations/1.sql
 checkb 1 - prod  chore      design/logo.svg
@@ -174,7 +177,9 @@ check_pr 1 'src/types/db.ts' "$R" design 'git mv src/types/db.ts src/types/schem
 check_pr 1 'src/types/db.ts' "$R" design 'printf "[lanes]\ndev_only = []\n" > spd_config.toml && echo "// x" >> src/types/db.ts'
 check_pr 1 '' "$R" design 'echo "// x" >> src/App.tsx'
 check_pr 0 '' "$R" design 'mkdir -p design && echo x > design/guidebook.md'
-check_pr 1 '' "$R" chore 'echo x >> README.md'
+check_pr 0 '' "$R" chore 'echo x >> README.md'
+check_pr 1 'supabase/' "$R" chore 'echo "select 2;" > supabase/migrations/003.sql'
+check_pr 1 'src/types/db.ts' "$R" chore 'echo "// x" >> src/types/db.ts'
 check_pr 0 'carries schema migrations: supabase/migrations/002_more.sql' "$R" dev "printf -- '-- forward-only: reads only\\nselect 1;\\n' > supabase/migrations/002_more.sql"
 check_pr 1 'design/a.md' "$R" dev 'echo y >> design/a.md'
 check_pr 1 '' "$R" proposal-3 'echo "// x" >> src/App.tsx'

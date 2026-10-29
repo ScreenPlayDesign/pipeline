@@ -9,12 +9,12 @@
 #   base staging
 #     dev     may change anything but design/, supabase/ included
 #     design  may change only paths under design/
-#     chore   never goes to staging: it goes straight into prod
+#     chore   may change anything but supabase/, a dev-only path or design/
 #     any other head branch (proposal-N, data, feature-x …) never PRs into
 #     staging, whatever it changes; proposals land on dev or design
 #   base prod
 #     staging may bring anything
-#     chore   may change anything but supabase/, a dev-only path or design/
+#     chore   the same limits as into staging (Jon, 2026-10-29: chore goes into staging or prod)
 #     any other head branch never PRs into prod
 #
 # On every lane and base, a migration lives only in supabase/migrations/ (Jon, 2026-10-28): a .sql
@@ -107,6 +107,23 @@ refuse_misplaced() {
   fi
 }
 
+# The chore lane, into staging or prod: anything but supabase/, a dev-only path or design/.
+guard_chore() {
+  local f offending=""
+  for f in "$@"; do
+    case "$f" in design/*) offending="$offending $f"; continue ;; esac
+    if is_dev_only "$f"; then offending="$offending $f"; fi
+  done
+  if [ -n "$offending" ]; then
+    echo "The chore lane may not change supabase/, a dev-only path or design/."
+    echo "Offending files:$offending"
+    exit 1
+  fi
+  echo "The chore lane changes no supabase/, dev-only or design/ path."
+  refuse_misplaced "$@"
+  exit 0
+}
+
 case "$BASE" in
   staging)
     case "$LANE" in
@@ -137,13 +154,12 @@ case "$BASE" in
         refuse_misplaced "$@"
         exit 0 ;;
       chore)
-        echo "The chore lane does not open pull requests into staging: chore goes straight into prod."
-        exit 1 ;;
+        guard_chore "$@" ;;
       proposal-*)
         echo "'$LANE' is a proposal lane: it lands on dev or design by a reviewed pull request, never on staging."
         exit 1 ;;
       *)
-        echo "'$LANE' is not a lane. Only dev and design open pull requests into staging."
+        echo "'$LANE' is not a lane. Only dev, design and chore open pull requests into staging."
         exit 1 ;;
     esac ;;
   prod)
@@ -153,19 +169,7 @@ case "$BASE" in
         refuse_misplaced "$@"
         exit 0 ;;
       chore)
-        offending=""
-        for f in "$@"; do
-          case "$f" in design/*) offending="$offending $f"; continue ;; esac
-          if is_dev_only "$f"; then offending="$offending $f"; fi
-        done
-        if [ -n "$offending" ]; then
-          echo "The chore lane may not change supabase/, a dev-only path or design/."
-          echo "Offending files:$offending"
-          exit 1
-        fi
-        echo "The chore lane changes no supabase/, dev-only or design/ path."
-        refuse_misplaced "$@"
-        exit 0 ;;
+        guard_chore "$@" ;;
       *)
         echo "'$LANE' may not open a pull request into prod. Only staging and chore open pull requests into prod."
         exit 1 ;;

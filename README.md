@@ -51,7 +51,8 @@ a set of files to a base (`LANE_BASE`, `staging` or `prod`);
 |---|---|---|
 | staging | `dev` | may change anything but `design/`, `supabase/` included |
 | staging | `design` | may change only `design/` |
-| staging | `chore`, `proposal-N`, anything else | refused |
+| staging | `chore` | may change anything but `supabase/`, a dev-only path or `design/` |
+| staging | `proposal-N`, anything else | refused |
 | prod | `staging` | may bring anything |
 | prod | `chore` | may change anything but `supabase/`, a dev-only path or `design/` |
 | prod | anything else | refused |

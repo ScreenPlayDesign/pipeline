@@ -67,13 +67,13 @@ jobs:
   #     every lane: a migration lives only in supabase/migrations/ (a .sql in another migrations/
   #             folder, or named like one outside supabase/migrations/ and supabase/tests/, fails).
   #     design  may change only design/.
-  #     chore   never goes to staging; it goes straight into prod.
+  #     chore   may change anything but supabase/, a dev-only path (spd_config.toml
+  #             [lanes] dev_only, e.g. frontend/src/types/db.ts) or design/.
   #     any other head branch fails, whatever it carries — proposal-N lands
   #     on dev or design, never on staging.
   #   into prod:
   #     staging may bring anything.
-  #     chore   may change anything but supabase/, a dev-only path (spd_config.toml
-  #             [lanes] dev_only, e.g. frontend/src/types/db.ts) or design/.
+  #     chore   the same limits as into staging.
   #     any other head branch fails.
   #
   # The scripts are checked out from this repo at the commit the caller pins,
