@@ -26,6 +26,10 @@ on:
         description: 'SPD dashboard cli-api URL'
         type: string
         default: 'https://hrbfsfvyatrdxegogdfz.supabase.co/functions/v1/cli-api'
+      workers:
+        description: 'How many scenes play at once against staging (2: more left pages loading past their limit, 2026-10-29)'
+        type: number
+        default: 2
     secrets:
       SPD_REHEARSAL_TOKEN:
         description: "The project's rehearsal-only token (spd ci setup)"
@@ -219,7 +223,7 @@ jobs:
           PLAYWRIGHT_JSON_OUTPUT_FILE: ${{ github.workspace }}/review/results.json
         run: |
           cfg=$(PROJECT_ROOT="$GITHUB_WORKSPACE" bun --no-env-file "$RUNNER_TEMP/spd-pipeline/scripts/rehearsal/cli.ts" playwright-config)
-          bunx playwright test ${cfg:+--config "$cfg"} --retries=0 --workers="$(nproc)" --reporter=line,json
+          bunx playwright test ${cfg:+--config "$cfg"} --retries=0 --workers="${{ inputs.workers }}" --reporter=line,json
       - name: Build the walkthrough report
         if: always()
         run: |
