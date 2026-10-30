@@ -1,4 +1,4 @@
-// copied from client/shared/spdConfig.ts sha256:017c0a2445a1f79ad0f422c69fa9f84b09d7714e935ab7c842fa75123fd18816 — do not edit; run make sync-spd-config in client
+// copied from client/shared/spdConfig.ts sha256:d4fdee48dc46ad962e74b0925fe1d0133af0f2e73a4ed7a87dc0ef8cc1da8ce3 — do not edit; run make sync-spd-config in client
 // The one schema for every project's spd_config.toml (version 2).
 //
 // Self-contained on purpose: the only runtime dependencies are Bun.TOML and
@@ -165,7 +165,7 @@ const REFUSED_SECTIONS: Record<string, string> = {
   testing: 'delete it; version 2 has no testing section',
 }
 const REFUSED_KEYS: Record<string, string> = {
-  'app.display_name': 'delete it; the display name lives in design/brand.toml',
+  'app.display_name': 'delete it; the display name lives under [brand] in design/brand-theme.toml',
   'app.version': 'delete it; the version lives in package.json',
   'app.stack': 'delete it; version 2 does not record the stack',
   'cloudflare.zone_id': 'delete it; the platform records the zone',
@@ -472,7 +472,7 @@ const KEPT_KEYS = new Set<string>([
 /**
  * Turn a version 1 spd_config.toml into version 2. Pure: text in, text out. It
  * reads only `projectRoot`'s top-level folders (`supabase/`, to set `shape`) and
- * `design/brand.toml` (to check `display_name`); with `projectRoot` '' it reads
+ * `design/brand-theme.toml` (to check `display_name`); with `projectRoot` '' it reads
  * nothing and sets `shape = "app"`. It keeps the comments on the lines it keeps.
  *
  * `moved` names what was renamed or set, `dropped` what version 2 refuses (or
@@ -508,16 +508,17 @@ export function migrateV1(
   }
   const appIn = isTable(doc.app) ? doc.app : {}
   if (typeof appIn.display_name === 'string' && projectRoot) {
-    const brandPath = join(projectRoot, 'design', 'brand.toml')
+    const themePath = join(projectRoot, 'design', 'brand-theme.toml')
     try {
-      if (existsSync(brandPath)) {
-        const brand = Bun.TOML.parse(readFileSync(brandPath, 'utf8'))
-        if (isTable(brand) && typeof brand.name === 'string' && brand.name !== appIn.display_name) {
-          refused.push(`[app] display_name is "${appIn.display_name}" but design/brand.toml name is "${brand.name}"; make them agree, then migrate`)
+      if (existsSync(themePath)) {
+        const theme = Bun.TOML.parse(readFileSync(themePath, 'utf8'))
+        const brand = isTable(theme) && isTable(theme.brand) ? theme.brand : {}
+        if (typeof brand.name === 'string' && brand.name !== appIn.display_name) {
+          refused.push(`[app] display_name is "${appIn.display_name}" but [brand] name in design/brand-theme.toml is "${brand.name}"; make them agree, then migrate`)
         }
       }
     } catch {
-      // an unreadable brand file has nothing to disagree with
+      // an unreadable theme file has nothing to disagree with
     }
   }
 
