@@ -102,6 +102,23 @@ export function runPayload(a: {
   }
 }
 
+// As many as the upload function answers quickly without refusing.
+const UPLOADS_AT_ONCE = 8
+
+/** Runs tasks with at most `max` of them under way, each in the order it asked. */
+export function limiter(max: number) {
+  let running = 0
+  const waiting: Array<() => void> = []
+  return async <T>(task: () => Promise<T>): Promise<T> => {
+    if (running >= max) await new Promise<void>(go => waiting.push(go))
+    else running++
+    try { return await task() } finally {
+      const next = waiting.shift()
+      if (next) next(); else running--
+    }
+  }
+}
+
 export async function postRehearsal(
   env: NodeJS.ProcessEnv = process.env,
   deps: { fetchFn?: typeof fetch; cwd?: string } = {},
@@ -176,7 +193,11 @@ export async function postRehearsal(
   }
   const auth = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }
 
-  async function upload(localPath: string, remotePath: string, key = runKey): Promise<string | null> {
+  // Hundreds of files, each a round trip through an edge function: several at a time, or the job's time runs out.
+  const inTurn = limiter(UPLOADS_AT_ONCE)
+  const upload = (localPath: string, remotePath: string, key = runKey) => inTurn(() => uploadNow(localPath, remotePath, key))
+
+  async function uploadNow(localPath: string, remotePath: string, key: string): Promise<string | null> {
     if (!localPath || !existsSync(localPath)) return null
     if (!insideAny(evidenceRoots, localPath)) {
       console.warn(`  refused evidence outside review/ or screenplay/: ${remotePath}`)
@@ -185,7 +206,7 @@ export async function postRehearsal(
     const size = statSync(localPath).size
     if (size === 0 || size > 40 * 1024 * 1024) return null
     try {
-      const res = await fetchFn(`${apiUrl}/upload`, {
+      const send = () => fetchFn(`${apiUrl}/upload`, {
         method: 'POST', headers: auth,
         body: JSON.stringify({
           project_slug: slug, run_key: key, path: remotePath,
@@ -193,6 +214,8 @@ export async function postRehearsal(
           data_b64: readFileSync(localPath).toString('base64'),
         }),
       })
+      let res = await send()
+      if (res.status === 429 || res.status === 503) res = await send()
       if (!res.ok) { console.warn(`  upload ${remotePath}: ${res.status}`); return null }
       return ((await res.json()) as { url?: string }).url ?? null
     } catch (e) { console.warn(`  upload ${remotePath}: ${(e as Error).message}`); return null }
@@ -218,9 +241,8 @@ export async function postRehearsal(
   let framesSent = 0
   const scenarioOf = new Map<ReportTest, ScenarioOutcome>()
   for (const o of outcomes) for (const t of o.tests) scenarioOf.set(t as ReportTest, o)
-  const rows: ScenarioRow[] = []
   const castIds = new Set(entries.filter(e => e.kind === 'persona').flatMap(e => e.actor_key ? [e.actor_key.toLowerCase()] : []))
-  for (const t of tests) {
+  const rows: ScenarioRow[] = await Promise.all(tests.map(async (t, sort_order) => {
     const o = scenarioOf.get(t)
     const r = finalResult(t.spec)
     const status: ScenarioRow['status'] = t.status === 'fixme' ? 'not_performed' : t.status
@@ -265,13 +287,12 @@ export async function postRehearsal(
           duration_ms: s.duration_ms ?? null, focus_actor: s.focus_actor_id,
         }))
         const actorById = new Map(m.actors.map(a => [a.id, a]))
-        for (const step of m.steps) for (const fr of step.frames) {
-          if (fr.error) continue
+        const sent = await Promise.all(m.steps.flatMap(step => step.frames.filter(fr => !fr.error).map(async (fr): Promise<FrameRow | null> => {
           const local = join(walkDir, sSlug, fr.file)
           const url = await upload(local, `${sSlug}/frames/${basename(fr.file)}`)
-          if (!url) continue
+          if (!url) return null
           const actor = actorById.get(fr.actor_id)
-          frames.push({
+          return {
             step_index: step.index, step_title: step.title,
             narration: step.narration && step.narration !== step.title ? step.narration : null,
             step_status: step.status, actor_id: fr.actor_id, actor_name: actor?.name ?? fr.actor_id,
@@ -279,8 +300,9 @@ export async function postRehearsal(
             is_focus: step.focus_actor_id === fr.actor_id, frame_url: url,
             content_hash: (() => { try { return createHash('sha256').update(readFileSync(local)).digest('hex') } catch { return null } })(),
             page_url: fr.url ?? null, width: fr.width, height: fr.height, captured_at: fr.captured_at ?? null,
-          })
-        }
+          }
+        })))
+        for (const row of sent) if (row) frames.push(row)
       } catch (e) { console.warn(`  walkthrough ${sSlug}: ${(e as Error).message}`) }
     }
     // With no screenshot of its own, the scene's final screen is the last
@@ -292,16 +314,16 @@ export async function postRehearsal(
     }
     framesSent += frames.length
     const fixmeScene = t.status === 'fixme' && o ? o : null
-    rows.push({
+    return {
       feature_file: t.featureFile, scenario_name: t.title,
       scenario_tags: o?.scenario.tags ?? [], status, required: o?.scenario.required ?? false,
       duration_ms: r?.duration ?? null,
       error_message: fixmeScene ? "This scene's test is marked fixme"
         : r?.error?.message ? stripAnsi(r.error.message).split('\n')[0] : null,
       screenshot_url: screenshot, video_url: video, diff_url: diff,
-      sort_order: rows.length, frames, comparisons, steps: fixmeScene ? skippedSteps(fixmeScene) : steps,
-    })
-  }
+      sort_order, frames, comparisons, steps: fixmeScene ? skippedSteps(fixmeScene) : steps,
+    }
+  }))
   for (const o of outcomes.filter(x => x.tests.length === 0)) rows.push(notPerformedRow(o, rows.length))
 
   try {

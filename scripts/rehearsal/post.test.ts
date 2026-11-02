@@ -506,3 +506,51 @@ test('comparison images outside review/ are not uploaded', async () => {
   expect(calls.some(c => c.url.endsWith('/upload'))).toBe(false)
   expect(calls.find(c => c.url.endsWith('/test-report'))!.body.scenarios[0].comparisons).toEqual([])
 })
+
+// --- Uploads go several at a time, in order, and survive a busy server ----
+
+function manyFrames(root: string, n: number) {
+  const dir = join(root, 'review', 'walkthroughs', 'kira-shares')
+  mkdirSync(dir, { recursive: true })
+  for (let i = 0; i < n; i++) writeFileSync(join(dir, `f${i}.png`), `frame ${i}`)
+  writeFileSync(join(dir, 'walkthrough.json'), JSON.stringify({
+    actors: [{ id: 'kira', name: 'Kira', role: 'r', device: 'd' }],
+    steps: [{ index: 1, title: 'Given Kira is signed in', narration: '', focus_actor_id: 'kira', status: 'passed', error_message: null, duration_ms: 1,
+      frames: Array.from({ length: n }, (_, i) => ({ actor_id: 'kira', file: `f${i}.png`, url: 'https://x', width: 4, height: 4, captured_at: 't' })) }],
+  }))
+}
+
+test('uploads run several at a time, never more than eight, and frames keep their order', async () => {
+  const root = project()
+  manyFrames(root, 30)
+  let now = 0, peak = 0
+  const { calls, fetchFn } = stub(async url => {
+    if (!url.endsWith('/upload')) return ok()
+    peak = Math.max(peak, ++now)
+    await new Promise(r => setTimeout(r, 5))
+    now--
+    return new Response(JSON.stringify({ url: 'https://cdn/' + Math.random() }), { status: 201 })
+  })
+  await postRehearsal(env, { fetchFn, cwd: root })
+  expect(peak).toBeGreaterThan(1)
+  expect(peak).toBeLessThanOrEqual(8)
+  const report = calls.find(c => c.url.endsWith('/test-report'))!.body
+  expect(report.scenarios[0].frames).toHaveLength(30)
+  const sent = calls.filter(c => c.body?.path?.includes('/frames/'))
+  const urls = new Set(report.scenarios[0].frames.map((f: { frame_url: string }) => f.frame_url))
+  expect(urls.size).toBe(30)
+  expect(sent).toHaveLength(30)
+})
+
+test('a busy server gets one more try, and the frame still arrives', async () => {
+  const root = project()
+  manyFrames(root, 1)
+  let tries = 0
+  const { calls, fetchFn } = stub(url => {
+    if (!url.endsWith('/upload')) return ok()
+    return ++tries === 1 ? new Response('busy', { status: 429 }) : new Response(JSON.stringify({ url: 'https://cdn/x' }), { status: 201 })
+  })
+  await postRehearsal(env, { fetchFn, cwd: root })
+  expect(tries).toBe(2)
+  expect(calls.find(c => c.url.endsWith('/test-report'))!.body.scenarios[0].frames).toHaveLength(1)
+})
