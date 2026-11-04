@@ -9,11 +9,12 @@
  * project's, so the version is accepted only as plain digits before it goes
  * into an image name.
  *
- * No version found (no bun.lock, or no Playwright in it): the default image,
- * and perform installs the project's own browser into it as before.
+ * No version found (no bun.lock, no Playwright in it, or a pre-release such as
+ * 1.65.0-beta-…, which Microsoft publishes no image for): the default image, the
+ * newest released one, and perform installs the project's own browser into it.
  */
 
-export const DEFAULT_PLAYWRIGHT = '1.61.1'
+export const DEFAULT_PLAYWRIGHT = '1.64.1'
 const VERSION = /^\d{1,3}\.\d{1,3}\.\d{1,3}$/
 
 /** playwright-core's resolved version in a bun.lock, or null. */
