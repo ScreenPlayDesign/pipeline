@@ -26,5 +26,7 @@ describe('playwrightOutputs', () => {
   test('the matching image, or the default with the browser installed', () => {
     expect(playwrightOutputs(lock('1.61.0'))).toEqual({ playwright_image: 'mcr.microsoft.com/playwright:v1.61.0-noble', playwright_matched: 'true' })
     expect(playwrightOutputs(null)).toEqual({ playwright_image: `mcr.microsoft.com/playwright:v${DEFAULT_PLAYWRIGHT}-noble`, playwright_matched: 'false' })
+    // A pre-release has no image of its own: the newest released one, and the project's own browser installed.
+    expect(playwrightOutputs(lock('1.65.0-beta-1793744581000'))).toEqual({ playwright_image: 'mcr.microsoft.com/playwright:v1.64.1-noble', playwright_matched: 'false' })
   })
 })
