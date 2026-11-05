@@ -52,3 +52,24 @@ test('PROJECT_ROOT overrides the working directory', () => {
   expect(projectRoot({ PROJECT_ROOT: '/w/project' } as never)).toBe('/w/project')
   expect(projectRoot({} as never)).toBe(process.cwd())
 })
+
+test('the record URL is built the same from either base form, with or without a trailing slash', async () => {
+  for (const base of [
+    'https://hrbfsfvyatrdxegogdfz.supabase.co/functions/v1/cli-api',
+    'https://hrbfsfvyatrdxegogdfz.supabase.co/functions/v1/cli-api/',
+    'https://screenplaydesign.com/api/cli',
+    'https://screenplaydesign.com/api/cli/',
+  ]) {
+    let seen = ''
+    const f = (async (url: string) => { seen = url; return new Response(JSON.stringify({ record }), { status: 200 }) }) as unknown as typeof fetch
+    await readProjectConfig({ ...env, SPD_API_URL: base }, f)
+    expect(seen).toBe(`${base.replace(/\/$/, '')}/record?repo=ScreenPlayDesign%2Ffastnacht-lancaster`)
+  }
+})
+
+test('an empty SPD_API_URL (a caller that sets no api-url) falls back to the default hub', async () => {
+  let seen = ''
+  const f = (async (url: string) => { seen = url; return new Response(JSON.stringify({ record }), { status: 200 }) }) as unknown as typeof fetch
+  await readProjectConfig({ ...env, SPD_API_URL: '' }, f)
+  expect(seen.startsWith('https://screenplaydesign.com/api/cli/record?')).toBe(true)
+})

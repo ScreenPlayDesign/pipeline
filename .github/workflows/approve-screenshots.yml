@@ -15,6 +15,10 @@ on:
       pipeline-ref:
         type: string
         required: true
+      api-url:
+        description: 'SPD dashboard cli-api URL'
+        type: string
+        default: 'https://hrbfsfvyatrdxegogdfz.supabase.co/functions/v1/cli-api'
     secrets:
       PR_BOT_TOKEN:
         required: false
@@ -128,6 +132,7 @@ jobs:
           PROJECT_ROOT: ${{ github.workspace }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           SPD_REHEARSAL_TOKEN: ${{ secrets.SPD_REHEARSAL_TOKEN }}
+          SPD_API_URL: ${{ inputs.api-url }}
         run: |
           cd "$RUNNER_TEMP/spd-pipeline"
           bun --no-env-file scripts/rehearsal/cli.ts config >> "$GITHUB_OUTPUT"
