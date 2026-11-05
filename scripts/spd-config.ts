@@ -1,4 +1,4 @@
-// copied from client/shared/spdConfig.ts sha256:e7643fdbe5747dcdb4006e804ed86d7d2fa4d27737ae6dd1d3963b1540765114 — do not edit; run make sync-spd-config in client
+// copied from client/shared/spdConfig.ts sha256:0d2d7174c55762ac9bc8c02c1c49c9c499940cf5be78b3dead90aa14933db045 — do not edit; run make sync-spd-config in client
 // The one schema for every project's spd_config.toml (version 3: code-only facts).
 //
 // Version 3 holds only what the code alone knows (see parseSpdConfig, CODE_ONLY_KEYS). Every other fact
@@ -760,8 +760,11 @@ export function parseSpdConfig(text: string): { config: CodeOnlyConfig; findings
 const V3_KEPT = new Set(['lanes.dev_only', 'gateway.behaviour_paths', 'gateway.rehearse_first', 'layer.kind', 'layer.angle', 'layer.upstream'])
 const keptInV3 = (path: string): boolean => V3_KEPT.has(path) || path.startsWith('paths.')
 
+const tomlKey = (k: string): string => (/^[A-Za-z0-9_-]+$/.test(k) ? k : JSON.stringify(k))
+
 function tomlValue(v: unknown): string {
   if (Array.isArray(v)) return `[${v.map(tomlValue).join(', ')}]`
+  if (isTable(v)) return `{ ${Object.entries(v).map(([k, x]) => `${tomlKey(k)} = ${tomlValue(x)}`).join(', ')} }`
   return typeof v === 'string' ? JSON.stringify(v) : String(v)
 }
 
@@ -781,7 +784,7 @@ export function migrateToV3(v2Text: string): string {
   const lines = v2Text.split('\n')
   const entries = scanEntries(lines)
   const KEEP_PREFIXES = [...V3_KEPT, 'paths']
-  const holdsKept = (path: string): boolean => KEEP_PREFIXES.some((k) => k.startsWith(`${path}.`))
+  const holdsKept = (path: string): boolean => path === 'paths' || KEEP_PREFIXES.some((k) => k.startsWith(`${path}.`))
   // An inline table or dotted key above a kept key cannot be cut line by line: write the kept part out.
   if (entries.some((e) => e.type === 'key' && !keptInV3(e.path) && holdsKept(e.path))) {
     const out: string[] = ['schema = 3']
@@ -790,7 +793,7 @@ export function migrateToV3(v2Text: string): string {
       if (!isTable(t)) continue
       const rows = Object.entries(t).filter(([k]) => keys === null || (keys as readonly string[]).includes(k))
       if (rows.length === 0) continue
-      out.push('', `[${section}]`, ...rows.map(([k, v]) => `${k} = ${tomlValue(v)}`))
+      out.push('', `[${section}]`, ...rows.map(([k, v]) => `${tomlKey(k)} = ${tomlValue(v)}`))
     }
     return out.join('\n') + '\n'
   }

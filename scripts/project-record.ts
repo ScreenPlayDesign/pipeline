@@ -1,4 +1,4 @@
-// copied from client/shared/projectRecord.ts sha256:47f8a0c1f7cb2dcc23ee058f6ef43a0bfde664dfb921d6e99ca072e953835dab — do not edit; run make sync-spd-config in client
+// copied from client/shared/projectRecord.ts sha256:9f11db508af5634da60540e072d4e7abeef8565f4ce8b2837227f366cb65fd3b — do not edit; run make sync-spd-config in client
 // What a project is: the hub's record, the identity that finds it, and the cache that stands in for
 // the hub when it cannot be reached.
 //
@@ -59,6 +59,8 @@ export function repoFromRemote(url: string): { org: string; repo: string } | nul
 
 // ── The hub ──────────────────────────────────────────────────────────────────
 
+export const FETCH_TIMEOUT_MS = 10_000
+
 export type FetchResult = { ok: true; record: ProjectRecord } | { ok: false; status: number | 'offline' }
 
 /**
@@ -71,6 +73,8 @@ export async function fetchRecord(opts: {
   slug?: string
   repo?: { org: string; repo: string }
   fetch?: typeof fetch
+  /** How long to wait for the hub; a timeout is 'offline'. Default 10 s. */
+  timeoutMs?: number
 }): Promise<FetchResult> {
   const base = opts.api.replace(/\/+$/, '')
   const url = opts.slug
@@ -81,7 +85,10 @@ export async function fetchRecord(opts: {
   if (!url) return { ok: false, status: 400 }
   let res: Response
   try {
-    res = await (opts.fetch ?? fetch)(url, { headers: { Authorization: `Bearer ${opts.token}`, Accept: 'application/json' } })
+    res = await (opts.fetch ?? fetch)(url, {
+      headers: { Authorization: `Bearer ${opts.token}`, Accept: 'application/json' },
+      signal: AbortSignal.timeout(opts.timeoutMs ?? FETCH_TIMEOUT_MS),
+    })
   } catch {
     return { ok: false, status: 'offline' }
   }
@@ -173,6 +180,7 @@ export async function resolveRecord(opts: {
   slug?: string
   repo?: { org: string; repo: string }
   fetch?: typeof fetch
+  timeoutMs?: number
   cacheDir?: string
   now?: () => number
 }): Promise<{ record: ProjectRecord; source: 'hub' | 'cache'; ageMs: number }> {
@@ -188,11 +196,16 @@ export async function resolveRecord(opts: {
     }
     return { record: got.record, source: 'hub', ageMs: 0 }
   }
-  if (got.status !== 'offline') {
+  // 'offline' and a 5xx both mean the hub cannot be reached; 403 and 404 are answers and never use the cache.
+  const unreachable = got.status === 'offline' || got.status >= 500
+  if (!unreachable) {
     throw new RecordUnavailable(`the hub answered ${got.status} for ${what}${got.status === 403 ? ' (this token may not read that project)' : got.status === 404 ? ' (no such project)' : ''}`, got.status)
   }
   const slug = opts.slug ?? (opts.repo ? cachedSlugForRepo(opts.repo.org, opts.repo.repo, dir) : null)
   const cached = slug ? readCachedRecord(slug, dir, now) : null
   if (cached) return { record: cached.record, source: 'cache', ageMs: cached.ageMs }
-  throw new RecordUnavailable(`the hub cannot be reached and there is no cached record for ${what}`, 'offline')
+  throw new RecordUnavailable(
+    `the hub cannot be reached${got.status === 'offline' ? '' : ` (it answered ${got.status})`} and there is no cached record for ${what}`,
+    got.status,
+  )
 }
