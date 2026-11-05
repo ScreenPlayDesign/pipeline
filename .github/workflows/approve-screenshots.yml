@@ -18,6 +18,9 @@ on:
     secrets:
       PR_BOT_TOKEN:
         required: false
+      SPD_REHEARSAL_TOKEN:
+        description: "The project's rehearsal-only token (spd ci setup); reads the project record from the hub"
+        required: false
       STAGING_DB_URL:
         required: false
       STAGING_SUPABASE_URL:
@@ -119,10 +122,12 @@ jobs:
         with:
           bun-version: ${{ steps.bun.outputs.version }}
           no-cache: true
-      - name: Read spd_config.toml
+      - name: Read the project record from the hub
         id: cfg
         env:
           PROJECT_ROOT: ${{ github.workspace }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          SPD_REHEARSAL_TOKEN: ${{ secrets.SPD_REHEARSAL_TOKEN }}
         run: |
           cd "$RUNNER_TEMP/spd-pipeline"
           bun --no-env-file scripts/rehearsal/cli.ts config >> "$GITHUB_OUTPUT"

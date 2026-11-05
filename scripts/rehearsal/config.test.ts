@@ -1,58 +1,54 @@
-import { afterAll, expect, test } from 'bun:test'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { expect, test } from 'bun:test'
 import { projectRoot, readProjectConfig } from './config.ts'
 
-const dir = mkdtempSync(join(tmpdir(), 'spd-cfg-'))
-afterAll(() => rmSync(dir, { recursive: true, force: true }))
+const env = { GITHUB_REPOSITORY: 'ScreenPlayDesign/fastnacht-lancaster', SPD_REHEARSAL_TOKEN: 'tok' } as NodeJS.ProcessEnv
+const record = { slug: 'fastnacht-lancaster', urls: { prod: 'https://p.example', staging: 'https://staging.fastnacht-lancaster.pages.dev/' } }
+const answer = (status: number, body: unknown = { record }) =>
+  (async () => new Response(JSON.stringify(body), { status })) as unknown as typeof fetch
 
-test('reads the slug and staging URL from spd_config.toml', () => {
-  writeFileSync(join(dir, 'spd_config.toml'), `[app]
-name = "fastnacht-lancaster"
-
-[env.staging]
-url = "https://staging.fastnacht-lancaster.pages.dev"   # branch alias
-`)
-  expect(readProjectConfig(dir)).toEqual({
+test('reads the slug and staging URL from the hub record', async () => {
+  let seen = ''
+  let auth = ''
+  const f = (async (url: string, init: RequestInit) => {
+    seen = url
+    auth = (init.headers as Record<string, string>).Authorization
+    return new Response(JSON.stringify({ record }), { status: 200 })
+  }) as unknown as typeof fetch
+  expect(await readProjectConfig(env, f)).toEqual({
     slug: 'fastnacht-lancaster', stagingUrl: 'https://staging.fastnacht-lancaster.pages.dev',
   })
+  expect(seen).toBe('https://screenplaydesign.com/api/cli/record?repo=ScreenPlayDesign%2Ffastnacht-lancaster')
+  expect(auth).toBe('Bearer tok')
 })
 
-test('names the missing key', () => {
-  writeFileSync(join(dir, 'spd_config.toml'), `[app]\nname = "x"\n`)
-  expect(() => readProjectConfig(dir)).toThrow('[env.staging] url')
+test('SPD_API_URL overrides the hub base', async () => {
+  let seen = ''
+  const f = (async (url: string) => { seen = url; return new Response(JSON.stringify({ record }), { status: 200 }) }) as unknown as typeof fetch
+  await readProjectConfig({ ...env, SPD_API_URL: 'http://localhost:9/api/cli' }, f)
+  expect(seen.startsWith('http://localhost:9/api/cli/record?repo=')).toBe(true)
+})
+
+test('a 403 says the token cannot read the record', async () => {
+  await expect(readProjectConfig(env, answer(403, {}))).rejects.toThrow("this repo's rehearsal token cannot read its record")
+})
+
+test('a 404, a 5xx and an unreachable hub each fail with a clear message', async () => {
+  await expect(readProjectConfig(env, answer(404, {}))).rejects.toThrow('no project record')
+  await expect(readProjectConfig(env, answer(503, {}))).rejects.toThrow('answered 503')
+  const down = (async () => { throw new Error('boom') }) as unknown as typeof fetch
+  await expect(readProjectConfig(env, down)).rejects.toThrow('could not be reached')
+})
+
+test('a record without a staging URL fails', async () => {
+  await expect(readProjectConfig(env, answer(200, { record: { slug: 's', urls: { prod: 'x' } } }))).rejects.toThrow('no staging URL')
+})
+
+test('a missing repo or token fails before asking', async () => {
+  await expect(readProjectConfig({ SPD_REHEARSAL_TOKEN: 't' } as never, answer(200))).rejects.toThrow('GITHUB_REPOSITORY')
+  await expect(readProjectConfig({ GITHUB_REPOSITORY: 'a/b' } as never, answer(200))).rejects.toThrow('SPD_REHEARSAL_TOKEN')
 })
 
 test('PROJECT_ROOT overrides the working directory', () => {
   expect(projectRoot({ PROJECT_ROOT: '/w/project' } as never)).toBe('/w/project')
   expect(projectRoot({} as never)).toBe(process.cwd())
-})
-
-const V2 = `schema = 2
-
-[app]
-name        = "fastnacht-lancaster"
-description = "A festival site"
-kind        = "local"
-shape       = "app"
-`
-
-test('reads a version 2 file through spd-config.ts', () => {
-  writeFileSync(join(dir, 'spd_config.toml'), `${V2}
-[env.staging]
-url = "https://staging.example.org/"
-`)
-  expect(readProjectConfig(dir)).toEqual({ slug: 'fastnacht-lancaster', stagingUrl: 'https://staging.example.org' })
-})
-
-test('refuses a file the schema refuses, with the schema reader\'s message', () => {
-  writeFileSync(join(dir, 'spd_config.toml'), `${V2}
-[paths]
-frontend = "frontend"
-
-[env.staging]
-url = "https://staging.example.org"
-`)
-  expect(() => readProjectConfig(dir)).toThrow(/paths/)
 })
