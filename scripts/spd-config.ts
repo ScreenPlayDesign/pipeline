@@ -1,4 +1,4 @@
-// copied from client/shared/spdConfig.ts sha256:0d2d7174c55762ac9bc8c02c1c49c9c499940cf5be78b3dead90aa14933db045 — do not edit; run make sync-spd-config in client
+// copied from client/shared/spdConfig.ts sha256:0cf59b2c0586a485d8deeebda3f0fb50415aad2fa3a400548e5e6b69b5b0c9ac — do not edit; run make sync-spd-config in client
 // The one schema for every project's spd_config.toml (version 3: code-only facts).
 //
 // Version 3 holds only what the code alone knows (see parseSpdConfig, CODE_ONLY_KEYS). Every other fact
@@ -17,7 +17,7 @@ export const SCHEMA_VERSION = 3
 /** The schema the retained reader (parseSpdConfigV2) validates. */
 export const LEGACY_SCHEMA_VERSION = 2
 export type Kind = 'local' | 'live'
-export type Shape = 'app' | 'site'
+export type Shape = 'app' | 'site' | 'frontend'
 
 export interface SpdConfigV2 {
   schema: 2
@@ -47,9 +47,15 @@ const SUPABASE_REF_RE = /^[a-z]{20}$/
 const CLOUDFLARE_ACCOUNT_RE = /^[0-9a-f]{32}$/
 
 /** The branches each shape has. The platform's, never written in the file. */
-export const LANES_BY_SHAPE: { readonly app: readonly string[]; readonly site: readonly string[] } = {
+export const LANES_BY_SHAPE: { readonly app: readonly string[]; readonly site: readonly string[]; readonly frontend: readonly string[] } = {
   app: [
     'dev', 'design', 'chore', 'staging', 'prod', 'release',
+    'proposal-1', 'proposal-2', 'proposal-3', 'proposal-4',
+    'proposal-5', 'proposal-6', 'proposal-7', 'proposal-8',
+  ],
+  // A frontend-only project: no supabase/ folder and no dev lane.
+  frontend: [
+    'design', 'chore', 'staging', 'prod', 'release',
     'proposal-1', 'proposal-2', 'proposal-3', 'proposal-4',
     'proposal-5', 'proposal-6', 'proposal-7', 'proposal-8',
   ],
@@ -71,6 +77,7 @@ export const LANES_BY_SHAPE: { readonly app: readonly string[]; readonly site: r
 export const REQUIRED_SECRETS_BY_SHAPE: {
   readonly app: Readonly<Record<'github' | 'pages' | 'supabase', readonly string[]>>
   readonly site: Readonly<Record<'github' | 'worker', readonly string[]>>
+  readonly frontend: Readonly<Record<'github' | 'pages', readonly string[]>>
 } = {
   app: {
     github: [
@@ -92,6 +99,21 @@ export const REQUIRED_SECRETS_BY_SHAPE: {
   site: {
     github: [],
     worker: ['TURNSTILE_SECRET_KEY'],
+  },
+  // The app's groups without the database ones (no PROD_DB_PASSWORD, no PROD_PROJECT_REF, no function secrets).
+  frontend: {
+    github: [
+      'PR_BOT_TOKEN',
+      'SPD_API_TOKEN',
+      'SPD_REHEARSAL_TOKEN',
+      'STAGING_DB_PASSWORD',
+      'STAGING_DB_URL',
+      'STAGING_PROJECT_REF',
+      'STAGING_SUPABASE_PUBLISHABLE_KEY',
+      'STAGING_SUPABASE_URL',
+      'SUPABASE_ACCESS_TOKEN',
+    ],
+    pages: ['VITE_SUPABASE_URL', 'VITE_SUPABASE_PUBLISHABLE_KEY'],
   },
 }
 
@@ -125,7 +147,7 @@ const SECTIONS: Record<string, Record<string, Check>> = {
     name: matches(NAME_RE, 'a lowercase slug (letters, digits, single hyphens), for example "my-project"'),
     description: str,
     kind: oneOf('local', 'live'),
-    shape: oneOf('app', 'site'),
+    shape: oneOf('app', 'site', 'frontend'),
   },
   github: { org: str, repo: str },
   supabase: {
@@ -353,7 +375,7 @@ function validateV2(raw: Table): { config: SpdConfigV2 | null; problems: Problem
 
   const app = isTable(raw.app) ? raw.app : {}
   const kind = app.kind === 'live' ? 'live' : 'local'
-  const shape = app.shape === 'site' ? 'site' : 'app'
+  const shape: Shape = app.shape === 'site' || app.shape === 'frontend' ? app.shape : 'app'
   const seen = new Set(problems.map((p) => p.path))
   for (const key of requiredFor(kind, shape)) {
     if (has(raw, key) || seen.has(key) || seen.has(key.split('.')[0])) continue
