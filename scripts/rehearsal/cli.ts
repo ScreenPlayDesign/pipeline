@@ -1,5 +1,5 @@
 // scripts/rehearsal/cli.ts — the steps dress-rehearsal.yml runs.
-//   bun cli.ts config   → slug=… / staging_url=… / playwright_image=… / playwright_matched=… (for $GITHUB_OUTPUT)
+//   bun cli.ts config   → (slug and staging URL from the hub's record) slug=… / staging_url=… / playwright_image=… / playwright_matched=… (for $GITHUB_OUTPUT)
 //   bun cli.ts wait     → waits for STAGING_URL to serve GITHUB_SHA; exits 1 with the reason
 //   bun cli.ts wait-migrations → waits for commit status supabase/staging-deploy = success (absent: continues after 5 min)
 //   bun cli.ts post     → posts the rehearsal; appends verdict= / description= to $GITHUB_OUTPUT
@@ -23,7 +23,8 @@ function waitFailed(reason: string): never {
   process.exit(1)
 }
 if (cmd === 'config') {
-  const c = readProjectConfig(projectRoot())
+  let c
+  try { c = await readProjectConfig() } catch (e) { console.error(`::error::${(e as Error).message.replace(/[\r\n]+/g, ' ')}`); process.exit(1) }
   console.log(`slug=${c.slug}`)
   console.log(`staging_url=${c.stagingUrl}`)
   // The scenes' container: read from bun.lock as text, never run.

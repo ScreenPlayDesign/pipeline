@@ -22,7 +22,7 @@ function verify(file: string, text: string): void {
   if (named !== actual) throw new Error(`${file} was edited by hand: its header names sha256:${named} but its bytes hash to sha256:${actual}; run make sync-spd-config in client`)
 }
 
-const FILES = ['spd-config.ts']
+const FILES = ['spd-config.ts', 'project-record.ts']
 
 for (const file of FILES) {
   test(`${file} matches the hash it names`, () => {

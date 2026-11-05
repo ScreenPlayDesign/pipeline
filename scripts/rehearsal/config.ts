@@ -1,22 +1,37 @@
-// scripts/rehearsal/config.ts — what the rehearsal needs from spd_config.toml.
-import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
-import { getKey, parseSpdConfig } from '../spd-config.ts'
+// scripts/rehearsal/config.ts — what the rehearsal needs from the hub's project record.
+import { fetchRecord } from '../project-record.ts'
 
 export interface RehearsalConfig { slug: string; stagingUrl: string }
 
-/** Reads spd_config.toml through spd-config.ts, the one reader (a version 1 file loads through its in-memory migration). */
-export function readProjectConfig(root: string): RehearsalConfig {
-  const file = join(root, 'spd_config.toml')
-  const { config, problems } = parseSpdConfig(readFileSync(file, 'utf8'), { projectRoot: root })
-  if (!config) {
-    const errors = problems.filter((p) => p.severity === 'error').map((p) => `${p.message} (${p.fix})`)
-    throw new Error(`spd_config.toml cannot be read: ${errors.join('; ')}`)
+// The workflows' default api-url (dress-rehearsal.yml, approve-screenshots.yml): the hub's cli-api function.
+// screenplaydesign.com/api/cli is not a working proxy (web-dashboard's _redirects), so it is never the default.
+export const DEFAULT_API = 'https://hrbfsfvyatrdxegogdfz.supabase.co/functions/v1/cli-api'
+
+/**
+ * The slug and staging URL come from the hub's record for this repo (GITHUB_REPOSITORY, SPD_REHEARSAL_TOKEN),
+ * not from the project's file. CI has no cache: a hub that cannot be reached, or any answer but 200, fails the step.
+ */
+export async function readProjectConfig(
+  env: NodeJS.ProcessEnv = process.env,
+  fetchImpl?: typeof fetch,
+): Promise<RehearsalConfig> {
+  const full = env.GITHUB_REPOSITORY ?? ''
+  const [org, repo, ...extra] = full.split('/')
+  if (!org || !repo || extra.length) throw new Error(`GITHUB_REPOSITORY is not "<org>/<repo>": "${full}"`)
+  const token = env.SPD_REHEARSAL_TOKEN ?? ''
+  if (!token) throw new Error('SPD_REHEARSAL_TOKEN is not set; the caller must pass the repo\'s rehearsal token (spd ci setup)')
+  const api = env.SPD_API_URL || DEFAULT_API
+  const got = await fetchRecord({ api, token, repo: { org, repo }, fetch: fetchImpl })
+  if (!got.ok) {
+    if (got.status === 403) throw new Error("this repo's rehearsal token cannot read its record")
+    if (got.status === 404) throw new Error(`the hub has no project record for ${full}`)
+    if (got.status === 'offline') throw new Error(`the hub at ${api} could not be reached, and CI has no cache to fall back on`)
+    throw new Error(`the hub at ${api} answered ${got.status} for the record of ${full}`)
   }
-  const slug = getKey(config, 'app.name')
-  const stagingUrl = getKey(config, 'env.staging.url')
-  if (typeof slug !== 'string' || !slug) throw new Error('spd_config.toml has no [app] name')
-  if (typeof stagingUrl !== 'string' || !stagingUrl) throw new Error('spd_config.toml has no [env.staging] url')
+  const slug = got.record.slug
+  const stagingUrl = got.record.urls?.staging
+  if (!slug) throw new Error(`the hub's record for ${full} has no slug`)
+  if (typeof stagingUrl !== 'string' || !stagingUrl) throw new Error(`the hub's record for ${full} has no staging URL`)
   return { slug, stagingUrl: stagingUrl.replace(/\/$/, '') }
 }
 
