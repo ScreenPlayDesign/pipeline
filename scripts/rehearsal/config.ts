@@ -1,14 +1,14 @@
 // scripts/rehearsal/config.ts — what the rehearsal needs from spd_config.toml.
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { getKey, parseSpdConfig } from '../spd-config.ts'
+import { getKey, parseSpdConfigV2 } from '../spd-config.ts'
 
 export interface RehearsalConfig { slug: string; stagingUrl: string }
 
 /** Reads spd_config.toml through spd-config.ts, the one reader (a version 1 file loads through its in-memory migration). */
 export function readProjectConfig(root: string): RehearsalConfig {
   const file = join(root, 'spd_config.toml')
-  const { config, problems } = parseSpdConfig(readFileSync(file, 'utf8'), { projectRoot: root })
+  const { config, problems } = parseSpdConfigV2(readFileSync(file, 'utf8'), { projectRoot: root })
   if (!config) {
     const errors = problems.filter((p) => p.severity === 'error').map((p) => `${p.message} (${p.fix})`)
     throw new Error(`spd_config.toml cannot be read: ${errors.join('; ')}`)

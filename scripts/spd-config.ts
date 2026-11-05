@@ -1,5 +1,9 @@
-// copied from client/shared/spdConfig.ts sha256:d4fdee48dc46ad962e74b0925fe1d0133af0f2e73a4ed7a87dc0ef8cc1da8ce3 — do not edit; run make sync-spd-config in client
-// The one schema for every project's spd_config.toml (version 2).
+// copied from client/shared/spdConfig.ts sha256:e7643fdbe5747dcdb4006e804ed86d7d2fa4d27737ae6dd1d3963b1540765114 — do not edit; run make sync-spd-config in client
+// The one schema for every project's spd_config.toml (version 3: code-only facts).
+//
+// Version 3 holds only what the code alone knows (see parseSpdConfig, CODE_ONLY_KEYS). Every other fact
+// about a project is the hub's record (projectRecord.ts). Version 1 and 2 files are still read, by
+// parseSpdConfigV2, until each reader moves onto the record and each project's file is cut.
 //
 // Self-contained on purpose: the only runtime dependencies are Bun.TOML and
 // node:fs/node:path (migrateV1 reads two things in the project folder), because
@@ -9,7 +13,9 @@
 import { existsSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 
-export const SCHEMA_VERSION = 2
+export const SCHEMA_VERSION = 3
+/** The schema the retained reader (parseSpdConfigV2) validates. */
+export const LEGACY_SCHEMA_VERSION = 2
 export type Kind = 'local' | 'live'
 export type Shape = 'app' | 'site'
 
@@ -225,6 +231,9 @@ function has(raw: Table, dotted: string): boolean {
 const PLATFORM_FIX = 'spd config pull'
 
 /**
+ * The version 1 and 2 reader, kept until every reader takes its facts from the record and every
+ * project's file is cut to version 3. New code calls parseSpdConfig.
+ *
  * Parse and validate an spd_config.toml. Unknown keys, refused keys, wrong types
  * and missing required keys are errors; `config` is null whenever any error exists
  * A version 1 file is read through `migrateV1` in memory and returned with
@@ -234,7 +243,7 @@ const PLATFORM_FIX = 'spd config pull'
  * its folders); the schema never falls back to it (a missing name is an error,
  * never the folder's name).
  */
-export function parseSpdConfig(
+export function parseSpdConfigV2(
   text: string,
   opts?: { projectRoot?: string },
 ): { config: SpdConfigV2 | null; problems: Problem[]; version: 1 | 2 } {
@@ -327,8 +336,8 @@ export function parseSpdConfig(
 /** Check a parsed document against the version 2 schema. */
 function validateV2(raw: Table): { config: SpdConfigV2 | null; problems: Problem[]; version: 1 | 2 } {
   const problems: Problem[] = []
-  if (raw.schema !== SCHEMA_VERSION) {
-    problems.push(err('schema', `schema must be ${SCHEMA_VERSION}`, `set schema = ${SCHEMA_VERSION}`))
+  if (raw.schema !== LEGACY_SCHEMA_VERSION) {
+    problems.push(err('schema', `schema must be ${LEGACY_SCHEMA_VERSION}`, `set schema = ${LEGACY_SCHEMA_VERSION}`))
   }
 
   for (const [section, value] of Object.entries(raw)) {
@@ -634,11 +643,184 @@ export function migrateV1(
 
   return { text: collapsed.join('\n') + '\n', moved, dropped: [...new Set(dropped)], refused }
 }
+
+// ── Version 3: code-only facts ───────────────────────────────────────────────
+
+export interface Finding {
+  level: 'error' | 'warn'
+  path: string
+  message: string
+  fix: string
+}
+
+/** What the file may say in version 3: the facts only the code knows. Everything else is the hub's record. */
+export const CODE_ONLY_KEYS = {
+  paths: 'any key, a string',
+  'lanes.dev_only': 'string list',
+  'gateway.behaviour_paths': 'string list',
+  'gateway.rehearse_first': 'boolean',
+  'layer.kind': 'string',
+  'layer.angle': 'string',
+  'layer.upstream': 'string',
+} as const
+
+export interface CodeOnlyConfig {
+  paths: Record<string, string>
+  lanes: { dev_only: string[] }
+  gateway: { behaviour_paths: string[] | null; rehearse_first: boolean | null }
+  layer: { kind?: string; angle?: string; upstream?: string }
+}
+
+/** The config when there is no file, or when a part of it is refused. */
+export function defaultCodeOnlyConfig(): CodeOnlyConfig {
+  return { paths: {}, lanes: { dev_only: [] }, gateway: { behaviour_paths: null, rehearse_first: null }, layer: {} }
+}
+
+// Sections version 1 and 2 held that the hub's record now answers.
+const HUB_SECTIONS = ['app', 'github', 'supabase', 'cloudflare', 'env', 'companion', 'rehearsal']
+const V3_CHECKS: Record<string, Record<string, Check>> = {
+  lanes: { dev_only: strList },
+  gateway: { behaviour_paths: strList, rehearse_first: bool },
+  layer: { kind: str, angle: str, upstream: str },
+}
+
+function flatKeys(value: unknown, prefix: string): string[] {
+  if (!isTable(value) || Object.keys(value).length === 0) return [prefix]
+  return Object.entries(value).flatMap(([k, v]) => flatKeys(v, `${prefix}.${k}`))
+}
+
+/**
+ * Read an spd_config.toml for its code-only facts. Pure: text in, config and findings out.
+ *
+ * Version 3 is strict: a key outside CODE_ONLY_KEYS is an error. A version 2 file (or a version 1 file,
+ * which has no `schema`) is read for the code-only keys it holds, and each key that now lives on the hub
+ * is a warning, "now on the hub: <key>". `config` is always whole: a refused part is left at its default.
+ */
+export function parseSpdConfig(text: string): { config: CodeOnlyConfig; findings: Finding[] } {
+  const config = defaultCodeOnlyConfig()
+  const findings: Finding[] = []
+  const fail = (path: string, message: string, fix: string) => findings.push({ level: 'error', path, message, fix })
+  const warn = (path: string, message: string, fix: string) => findings.push({ level: 'warn', path, message, fix })
+
+  let raw: unknown
+  try {
+    raw = Bun.TOML.parse(text)
+  } catch (e) {
+    fail('', `spd_config.toml is not valid TOML: ${e instanceof Error ? e.message : String(e)}`, 'fix the TOML syntax')
+    return { config, findings }
+  }
+  if (!isTable(raw)) {
+    fail('', 'spd_config.toml is not a table', 'fix the TOML syntax')
+    return { config, findings }
+  }
+
+  const version = Object.hasOwn(raw, 'schema') ? raw.schema : 1
+  if (version !== 1 && version !== 2 && version !== SCHEMA_VERSION) {
+    fail('schema', `schema must be ${SCHEMA_VERSION}`, `set schema = ${SCHEMA_VERSION}`)
+  } else if (version !== SCHEMA_VERSION) {
+    warn('schema', `spd_config.toml is version ${version}`, 'spd config migrate --to 3')
+  }
+  const old = version === 1 || version === 2
+
+  for (const [section, value] of Object.entries(raw)) {
+    if (section === 'schema') continue
+    if (section === 'paths') {
+      if (!isTable(value)) { fail('paths', '[paths] must be a table', 'write it as a [paths] table'); continue }
+      for (const [k, v] of Object.entries(value)) {
+        if (typeof v === 'string') config.paths[k] = v
+        else fail(`paths.${k}`, `paths.${k} must be a string`, `correct paths.${k}`)
+      }
+    } else if (Object.hasOwn(V3_CHECKS, section)) {
+      const checks = V3_CHECKS[section]
+      if (!isTable(value)) { fail(section, `[${section}] must be a table`, `write it as a [${section}] table`); continue }
+      for (const [k, v] of Object.entries(value)) {
+        const path = `${section}.${k}`
+        if (!Object.hasOwn(checks, k)) {
+          fail(path, `unknown key ${path}`, `delete ${k}, or check its spelling`)
+          continue
+        }
+        const bad = checks[k](v)
+        if (bad) { fail(path, `${path} ${bad}`, `correct ${path}`); continue }
+        if (section === 'lanes') config.lanes.dev_only = v as string[]
+        else if (path === 'gateway.behaviour_paths') config.gateway.behaviour_paths = v as string[]
+        else if (path === 'gateway.rehearse_first') config.gateway.rehearse_first = v as boolean
+        else (config.layer as Record<string, string>)[k] = v as string
+      }
+    } else if (old && HUB_SECTIONS.includes(section)) {
+      for (const key of flatKeys(value, section)) warn(key, `now on the hub: ${key}`, `delete ${key}; spd config migrate --to 3`)
+    } else if (old && version === 1) {
+      warn(section, `[${section}] is not used any more`, `delete [${section}]; spd config migrate --to 3`)
+    } else {
+      fail(section, `unknown section [${section}]`, `delete [${section}]: version 3 holds only ${Object.keys(CODE_ONLY_KEYS).join(', ')}`)
+    }
+  }
+  return { config, findings }
+}
+
+const V3_KEPT = new Set(['lanes.dev_only', 'gateway.behaviour_paths', 'gateway.rehearse_first', 'layer.kind', 'layer.angle', 'layer.upstream'])
+const keptInV3 = (path: string): boolean => V3_KEPT.has(path) || path.startsWith('paths.')
+
+function tomlValue(v: unknown): string {
+  if (Array.isArray(v)) return `[${v.map(tomlValue).join(', ')}]`
+  return typeof v === 'string' ? JSON.stringify(v) : String(v)
+}
+
+/**
+ * Turn a version 1 or 2 spd_config.toml into version 3: keep the code-only sections (and the comments
+ * on the lines kept), drop the rest, which the hub's record answers now. Pure: text in, text out.
+ */
+export function migrateToV3(v2Text: string): string {
+  let raw: unknown
+  try {
+    raw = Bun.TOML.parse(v2Text)
+  } catch {
+    return v2Text
+  }
+  if (!isTable(raw) || raw.schema === SCHEMA_VERSION) return v2Text
+
+  const lines = v2Text.split('\n')
+  const entries = scanEntries(lines)
+  const KEEP_PREFIXES = [...V3_KEPT, 'paths']
+  const holdsKept = (path: string): boolean => KEEP_PREFIXES.some((k) => k.startsWith(`${path}.`))
+  // An inline table or dotted key above a kept key cannot be cut line by line: write the kept part out.
+  if (entries.some((e) => e.type === 'key' && !keptInV3(e.path) && holdsKept(e.path))) {
+    const out: string[] = ['schema = 3']
+    for (const [section, keys] of [['paths', null], ['lanes', ['dev_only']], ['gateway', ['behaviour_paths', 'rehearse_first']], ['layer', ['kind', 'angle', 'upstream']]] as const) {
+      const t = raw[section]
+      if (!isTable(t)) continue
+      const rows = Object.entries(t).filter(([k]) => keys === null || (keys as readonly string[]).includes(k))
+      if (rows.length === 0) continue
+      out.push('', `[${section}]`, ...rows.map(([k, v]) => `${k} = ${tomlValue(v)}`))
+    }
+    return out.join('\n') + '\n'
+  }
+
+  const keptKeyIdx = new Set<number>()
+  const keptSections = new Set<string>()
+  entries.forEach((e, i) => {
+    if (e.type === 'key' && keptInV3(e.path)) { keptKeyIdx.add(i); keptSections.add(e.section) }
+  })
+  const out: string[] = ['schema = 3']
+  // The comment lines directly above an entry (no blank between) are its own.
+  const bannerOf = (idx: number): string[] => {
+    let b = idx
+    while (b > 0 && entries[b - 1].type === 'comment') b--
+    return lines.slice(entries[b].start, entries[idx].start)
+  }
+  entries.forEach((e, i) => {
+    if (e.type === 'header' && keptSections.has(e.path)) {
+      out.push('', ...bannerOf(i), ...lines.slice(e.start, e.end + 1))
+    } else if (keptKeyIdx.has(i)) {
+      out.push(...bannerOf(i), ...lines.slice(e.start, e.end + 1))
+    }
+  })
+  return out.join('\n') + '\n'
+}
 // ── CLI (not part of the hashed copy) ──
 // The command line under every copy of spdConfig.ts (foundation-template and pipeline).
 //
 // Not hashed. `make sync-spd-config` drops the import lines below and appends the rest after the
-// marker line of the copy, where parseSpdConfig, getKey, readFileSync and join are already in scope.
+// marker line of the copy, where parseSpdConfigV2, getKey, readFileSync and join are already in scope.
 
 
 function runSpdConfigCli(argv: string[]): number {
@@ -657,7 +839,7 @@ function runSpdConfigCli(argv: string[]): number {
     console.error(`cannot read ${file}`)
     return 1
   }
-  const { config, problems } = parseSpdConfig(text, { projectRoot: join(file, '..') })
+  const { config, problems } = parseSpdConfigV2(text, { projectRoot: join(file, '..') })
   const line = (p: { severity: string; message: string; fix: string }) => `${p.severity}: ${p.message} (${p.fix})`
   if (command === 'check') {
     for (const p of problems) console.log(line(p))
