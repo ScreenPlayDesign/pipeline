@@ -115,7 +115,34 @@ check_says() {   # check_says <config> <text the guard prints> <branch> <filesâ€
   if [ "$code" = 1 ] && printf '%s' "$out" | grep -qF "$want"; then pass=$((pass + 1)); echo "ok   says '$want'"
   else fail=$((fail + 1)); echo "FAIL expected \"$want\"; output: ${out:-<none>}"; fi
 }
-LANE_BASE=prod check_says 'schema = 2' 'Cannot read spd_config.toml' chore src/a.ts
+LANE_BASE=prod check_says 'schema = 3
+[lanes]
+dev_only = "src/types/db.ts"' 'Cannot read spd_config.toml' chore src/a.ts     # dev_only must be a list
+LANE_BASE=prod check_says 'schema = 3
+[app]
+name = "x"' 'unknown section [app]' chore src/a.ts                             # a hub section in version 3
+LANE_BASE=prod check_says 'schema = 4' 'Cannot read spd_config.toml' chore src/a.ts
+
+# Version 3 (code-only facts): the guard reads [lanes] dev_only the same way; a version 2 file
+# with only a schema line has no dev-only entries.
+V3='schema = 3
+
+[lanes]
+dev_only = ["src/types/db.ts", "generated/"]'
+V3_NO_LANES='schema = 3
+
+[paths]
+src = "web/src"'
+checkb 1 "$V3" prod chore src/types/db.ts
+checkb 1 "$V3" prod chore generated/x.ts
+checkb 0 "$V3" prod chore README.md
+check 1 "$V3"            chore src/types/db.ts
+check 1 "$V3"            design src/types/db.ts
+check 0 "$V3"            dev    src/types/db.ts
+checkb 0 "$V3_NO_LANES" prod chore src/types/db.ts README.md
+checkb 1 "$V3_NO_LANES" prod chore supabase/migrations/1.sql
+checkb 0 'schema = 3' prod chore src/types/db.ts
+checkb 0 'schema = 2' prod chore src/a.ts
 
 # Config edge cases: no file or no [lanes] means only supabase/ is dev-only;
 # multi-line arrays, comments, single quotes and directory entries are read;

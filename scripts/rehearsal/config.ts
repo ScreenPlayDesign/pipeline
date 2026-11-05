@@ -3,7 +3,9 @@ import { fetchRecord } from '../project-record.ts'
 
 export interface RehearsalConfig { slug: string; stagingUrl: string }
 
-export const DEFAULT_API = 'https://screenplaydesign.com/api/cli'
+// The workflows' default api-url (dress-rehearsal.yml, approve-screenshots.yml): the hub's cli-api function.
+// screenplaydesign.com/api/cli is not a working proxy (web-dashboard's _redirects), so it is never the default.
+export const DEFAULT_API = 'https://hrbfsfvyatrdxegogdfz.supabase.co/functions/v1/cli-api'
 
 /**
  * The slug and staging URL come from the hub's record for this repo (GITHUB_REPOSITORY, SPD_REHEARSAL_TOKEN),

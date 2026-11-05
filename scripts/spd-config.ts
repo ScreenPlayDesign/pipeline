@@ -845,8 +845,22 @@ export function migrateToV3(v2Text: string): string {
 // The command line under every copy of spdConfig.ts (foundation-template and pipeline).
 //
 // Not hashed. `make sync-spd-config` drops the import lines below and appends the rest after the
-// marker line of the copy, where parseSpdConfigV2, getKey, readFileSync and join are already in scope.
+// marker line of the copy, where parseSpdConfig and readFileSync are already in scope.
+//
+// It reads with parseSpdConfig, the version 3 reader, which also reads a version 1 or 2 file (each key
+// the hub now holds is a warning). So `get lanes.dev_only` answers for a version 2 or 3 file alike.
 
+
+function cliValue(config: unknown, dotted: string): string | number | boolean | string[] | undefined {
+  let cur: unknown = config
+  for (const part of dotted.split('.')) {
+    if (typeof cur !== 'object' || cur === null || Array.isArray(cur) || !Object.hasOwn(cur, part)) return undefined
+    cur = (cur as Record<string, unknown>)[part]
+  }
+  if (typeof cur === 'string' || typeof cur === 'number' || typeof cur === 'boolean') return cur
+  if (Array.isArray(cur) && cur.every((x) => typeof x === 'string')) return cur as string[]
+  return undefined
+}
 
 function runSpdConfigCli(argv: string[]): number {
   const fileAt = argv.indexOf('--file')
@@ -864,17 +878,18 @@ function runSpdConfigCli(argv: string[]): number {
     console.error(`cannot read ${file}`)
     return 1
   }
-  const { config, problems } = parseSpdConfigV2(text, { projectRoot: join(file, '..') })
-  const line = (p: { severity: string; message: string; fix: string }) => `${p.severity}: ${p.message} (${p.fix})`
+  const { config, findings } = parseSpdConfig(text)
+  const line = (f: { level: string; message: string; fix: string }) => `${f.level}: ${f.message} (${f.fix})`
+  const errors = findings.filter((f) => f.level === 'error')
   if (command === 'check') {
-    for (const p of problems) console.log(line(p))
-    return problems.some((p) => p.severity === 'error') ? 1 : 0
+    for (const f of findings) console.log(line(f))
+    return errors.length > 0 ? 1 : 0
   }
-  if (!config) {
-    for (const p of problems.filter((x) => x.severity === 'error')) console.error(line(p))
+  if (errors.length > 0) {
+    for (const f of errors) console.error(line(f))
     return 1
   }
-  const value = getKey(config, key as string)
+  const value = cliValue(config, key as string)
   if (value === undefined) {
     console.error(`${key} is not set in ${file}`)
     return 1

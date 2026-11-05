@@ -1,4 +1,4 @@
-// copied from client/shared/projectRecord.ts sha256:9f11db508af5634da60540e072d4e7abeef8565f4ce8b2837227f366cb65fd3b — do not edit; run make sync-spd-config in client
+// copied from client/shared/projectRecord.ts sha256:7c99a3f6bd620f27251a6bca0b9d195998fbdea052dab4a6ac47ce44a0d3887a — do not edit; run make sync-spd-config in client
 // What a project is: the hub's record, the identity that finds it, and the cache that stands in for
 // the hub when it cannot be reached.
 //
@@ -14,7 +14,7 @@ import { join } from 'node:path'
 export interface ProjectRecord {
   slug: string
   name: string
-  description: string
+  description: string | null
   kind: string
   shape: string
   domain: string | null
@@ -27,9 +27,12 @@ export interface ProjectRecord {
   frontends: string[]
   companion: { slug: string; shape: string } | null
   design_repo: string | null
-  lanes_hub: boolean
-  playhouse: boolean
-  house: boolean
+  /** Where the lanes lead: GitHub, or the Playhouse's Forgejo (071). */
+  lanes_hub: 'github' | 'playhouse'
+  /** The slug of the Playhouse that runs the project (079). */
+  playhouse: string
+  /** The project's AI firm slug (projects.ai_firm, 064). */
+  house: string
   rehearsal_gate: boolean
 }
 

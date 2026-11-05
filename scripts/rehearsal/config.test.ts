@@ -1,5 +1,7 @@
 import { expect, test } from 'bun:test'
-import { projectRoot, readProjectConfig } from './config.ts'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { DEFAULT_API, projectRoot, readProjectConfig } from './config.ts'
 
 const env = { GITHUB_REPOSITORY: 'ScreenPlayDesign/fastnacht-lancaster', SPD_REHEARSAL_TOKEN: 'tok' } as NodeJS.ProcessEnv
 const record = { slug: 'fastnacht-lancaster', urls: { prod: 'https://p.example', staging: 'https://staging.fastnacht-lancaster.pages.dev/' } }
@@ -17,7 +19,7 @@ test('reads the slug and staging URL from the hub record', async () => {
   expect(await readProjectConfig(env, f)).toEqual({
     slug: 'fastnacht-lancaster', stagingUrl: 'https://staging.fastnacht-lancaster.pages.dev',
   })
-  expect(seen).toBe('https://screenplaydesign.com/api/cli/record?repo=ScreenPlayDesign%2Ffastnacht-lancaster')
+  expect(seen).toBe('https://hrbfsfvyatrdxegogdfz.supabase.co/functions/v1/cli-api/record?repo=ScreenPlayDesign%2Ffastnacht-lancaster')
   expect(auth).toBe('Bearer tok')
 })
 
@@ -71,5 +73,12 @@ test('an empty SPD_API_URL (a caller that sets no api-url) falls back to the def
   let seen = ''
   const f = (async (url: string) => { seen = url; return new Response(JSON.stringify({ record }), { status: 200 }) }) as unknown as typeof fetch
   await readProjectConfig({ ...env, SPD_API_URL: '' }, f)
-  expect(seen.startsWith('https://screenplaydesign.com/api/cli/record?')).toBe(true)
+  expect(seen.startsWith('https://hrbfsfvyatrdxegogdfz.supabase.co/functions/v1/cli-api/record?')).toBe(true)
+})
+
+test('the default hub is the workflows\' default api-url', () => {
+  for (const wf of ['dress-rehearsal.yml', 'approve-screenshots.yml']) {
+    const text = readFileSync(join(import.meta.dir, '..', '..', '.github', 'workflows', wf), 'utf8')
+    expect(text).toContain(`default: '${DEFAULT_API}'`)
+  }
 })
