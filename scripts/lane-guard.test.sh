@@ -62,6 +62,13 @@ check 1 -        dev        src/a.ts design/logo.svg
 check 1 -        design     supabase/functions/x/index.ts
 check 1 -        design     src/App.tsx                 # design changes only design/
 check 0 -        design     design/guidebook.toml
+# The scenes' Linux baselines ride the design lane too (Approve screenshots pushes them there).
+check 0 -        design     screenplay/tests/arrival.spec.ts-snapshots/landing-linux.png
+check 0 -        design     design/logo.svg screenplay/tests/a.spec.ts-snapshots/a-linux.png
+check 1 -        design     screenplay/tests/arrival.spec.ts                         # the scene itself is dev's
+check 1 -        design     screenplay/tests/arrival.spec.ts-snapshots/landing-darwin.png  # CI reads only Linux
+check 1 -        design     screenplay/tests/landing-linux.png                       # not in a snapshots folder
+check 1 -        design     frontend/tests/a.spec.ts-snapshots/a-linux.png           # not under screenplay/
 check 0 -        chore      README.md package.json      # chore goes to staging as well as prod
 check 1 -        chore      supabase/migrations/1.sql   # with the limits it has into prod
 check 1 -        chore      design/logo.svg
@@ -204,6 +211,7 @@ check_pr 1 'src/types/db.ts' "$R" design 'git mv src/types/db.ts src/types/schem
 check_pr 1 'src/types/db.ts' "$R" design 'printf "[lanes]\ndev_only = []\n" > spd_config.toml && echo "// x" >> src/types/db.ts'
 check_pr 1 '' "$R" design 'echo "// x" >> src/App.tsx'
 check_pr 0 '' "$R" design 'mkdir -p design && echo x > design/guidebook.md'
+check_pr 0 '' "$R" design 'mkdir -p screenplay/tests/a.spec.ts-snapshots && echo x > screenplay/tests/a.spec.ts-snapshots/a-linux.png'
 check_pr 0 '' "$R" chore 'echo x >> README.md'
 check_pr 1 'supabase/' "$R" chore 'echo "select 2;" > supabase/migrations/003.sql'
 check_pr 1 'src/types/db.ts' "$R" chore 'echo "// x" >> src/types/db.ts'

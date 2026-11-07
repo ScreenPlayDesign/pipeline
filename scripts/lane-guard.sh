@@ -8,8 +8,10 @@
 # and prints the reason either way. Rules:
 #   base staging
 #     dev     may change anything but design/, supabase/ included
-#     design  may change only paths under design/
-#     chore   may change anything but supabase/, a dev-only path or design/
+#     design  may change only paths under design/, and the scenes' Linux baselines
+#             (screenplay/…-snapshots/…-linux.png), which Approve screenshots pushes there
+#             for the designer to approve (Jon, 2026-11-07)
+#     chore  may change anything but supabase/, a dev-only path or design/
 #     any other head branch (proposal-N, data, feature-x …) never PRs into
 #     staging, whatever it changes; proposals land on dev or design
 #   base prod
@@ -143,14 +145,17 @@ case "$BASE" in
       design)
         offending=""
         for f in "$@"; do
-          case "$f" in design/*) ;; *) offending="$offending $f" ;; esac
+          case "$f" in
+            design/*|screenplay/*-snapshots/*-linux.png) ;;
+            *) offending="$offending $f" ;;
+          esac
         done
         if [ -n "$offending" ]; then
-          echo "The design lane may change only design/."
+          echo "The design lane may change only design/ and the scenes' Linux baselines."
           echo "Offending files:$offending"
           exit 1
         fi
-        echo "The design lane changes only design/."
+        echo "The design lane changes only design/ and the scenes' Linux baselines."
         refuse_misplaced "$@"
         exit 0 ;;
       chore)
