@@ -5,6 +5,7 @@
 //   bun cli.ts post     → posts the rehearsal; appends verdict= / description= to $GITHUB_OUTPUT
 //   bun cli.ts playwright-config → prints the project's Playwright config path (relative), or nothing
 //   bun cli.ts reset-cast → runs ${PROJECT_ROOT}/supabase/testing/reset.sql against STAGING_DB_URL (skips with a warning if either is missing)
+//   bun cli.ts render-verdict → Approve screenshots: judges the render (RENDERED, RESULTS_FILE); exits 1 unless only @later scenes failed
 import { appendFileSync, existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { projectRoot, readProjectConfig } from './config.ts'
@@ -14,6 +15,9 @@ import { postRehearsal } from './post.ts'
 import { resetCast } from './reset.ts'
 import { playwrightOutputs } from './playwrightImage.ts'
 import { playwrightConfigFor } from './layout.ts'
+import { collectCastEntries } from './screenplay.ts'
+import { renderVerdict } from './screenshots.ts'
+import { inventoryFrom } from './verdict.ts'
 
 const cmd = process.argv[2]
 // The reason goes to the job output so the gate can say why staging was not ready.
@@ -58,7 +62,16 @@ if (cmd === 'config') {
 } else if (cmd === 'playwright-config') {
   const cfg = playwrightConfigFor(projectRoot())
   if (cfg) console.log(cfg)
+} else if (cmd === 'render-verdict') {
+  const file = process.env.RESULTS_FILE ?? ''
+  let report = null
+  try { if (file && existsSync(file)) report = JSON.parse(readFileSync(file, 'utf8')) } catch { report = null }
+  const inventory = inventoryFrom(collectCastEntries(join(projectRoot(), 'screenplay')))
+  const v = renderVerdict(process.env.RENDERED ?? '', report, inventory)
+  const line = v.reason.replace(/[\r\n]+/g, ' ')
+  if (!v.ok) { console.error(`::error::${line} — no baselines written; see the render step's log.`); process.exit(1) }
+  console.log(`::notice::${line}`)
 } else {
-  console.error('usage: bun cli.ts config|wait|wait-migrations|post|reset-cast|playwright-config')
+  console.error('usage: bun cli.ts config|wait|wait-migrations|post|reset-cast|playwright-config|render-verdict')
   process.exit(2)
 }

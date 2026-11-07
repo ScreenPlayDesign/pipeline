@@ -150,9 +150,13 @@ jobs:
           BASE_URL: ${{ steps.cfg.outputs.staging_url }}
           VITE_SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
           VITE_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.STAGING_SUPABASE_PUBLISHABLE_KEY }}
+          # Outside the checkout, so it is never taken for a baseline; render-verdict reads it.
+          PLAYWRIGHT_JSON_OUTPUT_FILE: ${{ runner.temp }}/render.json
         run: |
           cfg=$(PROJECT_ROOT="$GITHUB_WORKSPACE" bun --no-env-file "$RUNNER_TEMP/spd-pipeline/scripts/rehearsal/cli.ts" playwright-config)
-          bunx playwright test ${cfg:+--config "$cfg"} --retries=0 --workers="$(nproc)" --update-snapshots=changed --reporter=line
+          bunx playwright test ${cfg:+--config "$cfg"} --retries=0 --workers="$(nproc)" --update-snapshots=changed --reporter=line,json
+      # A failed render with nothing changed fails the run unless only @later scenes failed
+      # (render-verdict, as the rehearsal's verdict treats them).
       - name: Collect the new and changed Linux baselines
         id: collect
         env:
@@ -162,8 +166,8 @@ jobs:
           COUNT="$(tr -cd '\0' < "$RUNNER_TEMP/baselines.txt" | wc -c | tr -d ' ')"
           if [ "$COUNT" = 0 ]; then
             if [ "$RENDERED" = failure ]; then
-              echo "::error::Playwright failed and wrote no baselines — see the render step's log."
-              exit 1
+              (cd "$RUNNER_TEMP/spd-pipeline" && PROJECT_ROOT="$GITHUB_WORKSPACE" RESULTS_FILE="$RUNNER_TEMP/render.json" \
+                bun --no-env-file scripts/rehearsal/cli.ts render-verdict)
             fi
             echo "No new or changed Linux baselines."
           else
