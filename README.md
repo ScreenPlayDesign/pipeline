@@ -57,6 +57,38 @@ a set of files to a base (`LANE_BASE`, `staging` or `prod`);
 | prod | `chore` | may change anything but `supabase/`, a dev-only path or `design/` |
 | prod | anything else | refused |
 
+A **kit project** is one whose PR merge checkout holds `frontend/src/design/manifest.json`
+(looked for under `LANE_ROOT`, default the current directory; in CI that is the
+PR's merge checkout, which `actions/checkout` makes by default for a
+`pull_request` event), or whose changed files include it: a PR that
+touches the manifest, a deletion too, is judged by the kit rules. Its design arrives through the design
+kit, so it has no `design/` folder, and only kit projects get these rules; every
+other project keeps the table above.
+
+| Base | Head | Rule in a kit project |
+|---|---|---|
+| staging | `dev` | may change anything but `design/` (it has none) and the kit's files |
+| staging | `design` | may change only the kit's files and the scenes' Linux baselines |
+| staging | `chore` | the same limits as before, plus no `design/` and no kit file |
+| prod | `staging` | may bring anything |
+| prod | `chore` | the same limits as into staging |
+
+Every lane refuses the commit that moves a project onto the design kit, since it
+removes `design/` and adds the manifest. That move is a one-time merge by Jon,
+with the project's pipeline pin bumped in the same commit: see the Playhouse's
+`docs/forgejo.md`, "Moving a project onto the design kit". The guard's refusal
+of a `design/` path in a kit project points there too.
+
+The kit's files are the design lane's alone: `frontend/src/design/`, the public
+root files (`logo.svg`, `favicon.ico`, `favicon.svg`, `apple-touch-icon.png`,
+`icon-*.png`, `og-image.*`, `robots.txt`, `humans.txt`) and
+`frontend/public/{icons,img,brand,fonts}/`. The guard reads them from
+`scripts/design-owned.txt`, a copy of `design-kit owned app` (a line ending in
+`/` is a folder). The test compares the copy with the kit at
+`project/spd-hub/app/packages/design-kit` (or `$SPD_DESIGN_KIT`) and prints a
+note when the kit is absent. To refresh the copy:
+`bun <design-kit>/src/cli.ts owned app > scripts/design-owned.txt`.
+
 Dev-only paths are `supabase/` plus the `[lanes] dev_only` list in the base's
 `spd_config.toml` (for example `frontend/src/types/db.ts`). The list is read
 from the base, so a PR cannot drop an entry and change that file in the same

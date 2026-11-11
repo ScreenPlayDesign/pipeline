@@ -26,6 +26,9 @@ check() {
   if [ "$config" != "-" ]; then
     printf '%s\n' "$config" > "$dir/spd_config.toml"
   fi
+  if [ -n "${KIT:-}" ]; then   # KIT=1 check …: the case is a kit project
+    mkdir -p "$dir/frontend/src/design" && printf '{}\n' > "$dir/frontend/src/design/manifest.json"
+  fi
   local out code
   out="$(cd "$dir" && bash "$GUARD" "$@" 2>&1)"
   code=$?
@@ -162,6 +165,91 @@ check 1 "$MULTI"               design generated/x.ts
 check 0 "$MULTI"               design design/a.md design/b.tsx
 check 0 "$DB_TS"               dev    src/types/db.ts supabase/config.toml
 check 0 "$DB_TS"               design design/supabase-notes.md
+
+# ── A kit project: the PR's checkout holds frontend/src/design/manifest.json ──
+# Its design lane owns the kit's app files (scripts/design-owned.txt) and its dev and chore lanes
+# do not; it has no design/ folder, so every lane refuses design/. Any other project is unchanged.
+KIT_PUB=frontend/public
+check_kit_says() {   # check_kit_says <exit> <text the guard prints> <branch> <files…>, run in a kit project
+  local expected="$1" want="$2" dir out code
+  shift 2
+  dir="$(mktemp -d "$WORK/case.XXXXXX")"
+  mkdir -p "$dir/frontend/src/design" && printf '{}\n' > "$dir/frontend/src/design/manifest.json"
+  out="$(cd "$dir" && bash "$GUARD" "$@" 2>&1)"
+  code=$?
+  if [ "$code" = "$expected" ] && printf '%s' "$out" | grep -qF -- "$want"; then pass=$((pass + 1)); echo "ok   kit says '$want'"
+  else fail=$((fail + 1)); echo "FAIL kit $* -> exit $code, expected $expected and \"$want\"; output: ${out:-<none>}"; fi
+}
+KIT=1 check 0 - dev     $KIT_PUB/_headers src/a.ts frontend/src/App.tsx
+KIT=1 check 1 - dev     $KIT_PUB/robots.txt
+KIT=1 check 1 - dev     frontend/src/design/brand.json
+KIT=1 check 1 - dev     src/a.ts $KIT_PUB/icons/a.svg
+KIT=1 check 1 - dev     $KIT_PUB/fonts/x.woff2
+KIT=1 check 1 - dev     $KIT_PUB/favicon.ico
+KIT=1 check 0 - design  frontend/src/design/brand.json $KIT_PUB/logo.svg $KIT_PUB/img/hero.jpg $KIT_PUB/brand/a.svg
+KIT=1 check 0 - design  $KIT_PUB/icon-maskable-512.png $KIT_PUB/og-image.jpg $KIT_PUB/humans.txt
+KIT=1 check 0 - design  screenplay/x-snapshots/a-linux.png
+KIT=1 check 0 - design  frontend/src/design/tokens.css screenplay/tests/a.spec.ts-snapshots/a-linux.png
+KIT=1 check 1 - design  frontend/src/App.tsx
+KIT=1 check 1 - design  frontend/src/design/brand.json frontend/src/App.tsx
+KIT=1 check 1 - design  $KIT_PUB/_headers
+KIT=1 check 1 - design  $KIT_PUB/other/a.svg
+KIT=1 check 1 - design  screenplay/x-snapshots/a-darwin.png
+KIT=1 check 1 - design  supabase/functions/x/index.ts
+KIT=1 check 1 - chore   $KIT_PUB/robots.txt
+KIT=1 check 1 - chore   frontend/src/design/brand.json
+KIT=1 check 0 - chore   README.md $KIT_PUB/_headers
+KIT=1 check 1 - chore   supabase/migrations/1.sql             # chore's other limits stay
+KIT=1 check 1 "$DB_TS" chore src/types/db.ts
+KIT=1 check 0 "$DB_TS" dev    src/types/db.ts
+KIT=1 check 1 - dev     design/guidebook.toml                 # a kit project has no design/
+KIT=1 check 1 - design  design/guidebook.toml
+KIT=1 check 1 - design  design/a.md frontend/src/design/brand.json
+KIT=1 check 1 - chore   design/logo.svg
+KIT=1 check 1 - design  design/screenplay/x-snapshots/a-linux.png
+KIT=1 checkb 0 - prod staging  $KIT_PUB/robots.txt design/a.md frontend/src/App.tsx   # staging brings anything
+KIT=1 checkb 1 - prod chore    $KIT_PUB/robots.txt
+KIT=1 checkb 1 - prod chore    design/logo.svg
+KIT=1 checkb 1 - prod chore    supabase/migrations/1.sql
+KIT=1 checkb 0 - prod chore    README.md
+KIT=1 checkb 1 - prod dev      src/a.ts
+KIT=1 checkb 1 - prod design   frontend/src/design/brand.json
+KIT=1 check 1 - dev     supabase/001_loose.sql                # a migration lives only in supabase/migrations/
+# Any other project keeps today's rules: owned paths are open to dev, design/ is the design lane's.
+check 0 -       dev     $KIT_PUB/robots.txt frontend/src/design/brand.json $KIT_PUB/icons/a.svg
+check 1 -       design  $KIT_PUB/robots.txt
+check 1 -       design  frontend/src/design/brand.json
+check 0 -       chore   $KIT_PUB/robots.txt frontend/src/design/brand.json
+check 0 -       design  design/a.md
+check_kit_says 1 'keeps its design in the design repo' dev design/a.md
+check_kit_says 1 'has no design/ folder' design design/a.md
+check_kit_says 1 'has no design/ folder' chore design/a.md
+# The migration commit itself removes design/: dropping those paths would leave a half-migration.
+MIGRATION_WORDS='Moving a project onto the design kit is a one-time merge by Jon; see docs/forgejo.md (Moving a project onto the design kit).'
+check_kit_says 1 "$MIGRATION_WORDS" dev design/a.md
+check_kit_says 1 "$MIGRATION_WORDS" design design/a.md
+check_kit_says 1 "$MIGRATION_WORDS" chore design/a.md frontend/src/design/manifest.json
+LANE_BASE=prod check_kit_says 1 "$MIGRATION_WORDS" chore design/logo.svg
+check_kit_says 1 'design lane' dev $KIT_PUB/robots.txt
+check_kit_says 1 'design lane' chore frontend/src/design/brand.json
+check_kit_says 1 "$KIT_PUB/robots.txt" dev $KIT_PUB/robots.txt
+check_kit_says 1 "only the design kit's files" design frontend/src/App.tsx
+check_kit_says 0 'design lane' design frontend/src/design/brand.json
+
+# ── design-owned.txt is the kit's own list: `design-kit owned app` ──────────
+# The guard keeps a copy; this compares it with the kit when the kit is at the platform's usual
+# place (or $SPD_DESIGN_KIT), and says so when it skips.
+KIT_DIR="${SPD_DESIGN_KIT:-/Users/corner/dev/platform/project/spd-hub/app/packages/design-kit}"
+if [ -f "$KIT_DIR/src/cli.ts" ] && command -v bun >/dev/null 2>&1; then
+  want_owned="$(bun "$KIT_DIR/src/cli.ts" owned app 2>&1)"
+  if [ "$want_owned" = "$(cat "$HERE/design-owned.txt" 2>/dev/null)" ]; then
+    pass=$((pass + 1)); echo "ok   design-owned.txt equals 'design-kit owned app'"
+  else
+    fail=$((fail + 1)); echo "FAIL design-owned.txt differs from 'design-kit owned app'; refresh it: bun $KIT_DIR/src/cli.ts owned app > scripts/design-owned.txt"
+  fi
+else
+  echo "skip design-owned.txt vs the kit: no design-kit at $KIT_DIR (set SPD_DESIGN_KIT) or no bun"
+fi
 
 # ── lane-guard-pr.sh: the PR's own diff, against a real git history ─────────
 PR_GUARD="$HERE/lane-guard-pr.sh"
@@ -307,6 +395,40 @@ check_pr 1 'undo/002_add.down.sql' "$MR" dev "printf 'alter table t add column a
 check_pr 0 '' "$MR" dev "printf 'alter table t add column a int;\n' > supabase/migrations/002_add.sql && mkdir -p supabase/migrations/undo && printf 'alter table t drop column a;\n' > supabase/migrations/undo/002_add.down.sql"
 check_pr 0 '' "$MR" dev "printf -- '-- forward-only: drops nothing, adds a nullable column\nalter table t add column a int;\n' > supabase/migrations/002_add.sql"
 check_pr 1 'forward-only' "$MR" dev "printf -- '-- forward-only:\nalter table t add column a int;\n' > supabase/migrations/002_add.sql"
+
+# A PR that touches the manifest is a kit PR: deleting it does not free the kit's files.
+check 1 - dev   frontend/src/design/manifest.json $KIT_PUB/robots.txt
+check 1 - dev   frontend/src/design/manifest.json frontend/src/design/brand.json
+check 1 - chore frontend/src/design/manifest.json $KIT_PUB/robots.txt
+checkb 1 - prod chore frontend/src/design/manifest.json $KIT_PUB/robots.txt
+check 1 - dev   frontend/src/design/manifest.json design/a.md
+check 1 - chore frontend/src/design/manifest.json design/a.md
+check 0 - design frontend/src/design/manifest.json frontend/src/design/brand.json $KIT_PUB/logo.svg
+check 1 - design frontend/src/design/manifest.json frontend/src/App.tsx
+check 1 - dev   frontend/src/design/manifest.json frontend/src/App.tsx   # the manifest is the design lane's
+# A CRLF design-owned.txt still matches (the guard runs from a copy beside such a list).
+CRLF_DIR="$(mktemp -d "$WORK/crlf.XXXXXX")"
+cp "$GUARD" "$CRLF_DIR/lane-guard.sh"
+sed 's/$/\r/' "$HERE/design-owned.txt" > "$CRLF_DIR/design-owned.txt"
+crlf_dir="$(mktemp -d "$WORK/case.XXXXXX")"
+mkdir -p "$crlf_dir/frontend/src/design" && printf '{}\n' > "$crlf_dir/frontend/src/design/manifest.json"
+for f in $KIT_PUB/robots.txt frontend/src/design/brand.json $KIT_PUB/icons/a.svg; do
+  out="$(cd "$crlf_dir" && bash "$CRLF_DIR/lane-guard.sh" dev "$f" 2>&1)"; code=$?
+  if [ "$code" = 1 ]; then pass=$((pass + 1)); echo "ok   crlf list, dev $f -> 1"
+  else fail=$((fail + 1)); echo "FAIL crlf list, dev $f -> exit $code; output: ${out:-<none>}"; fi
+done
+
+# A kit project through lane-guard-pr.sh: the checkout is the PR's, so its manifest makes the kit.
+KR="$(new_repo yes)"
+(cd "$KR" && git checkout -q staging && mkdir -p frontend/src/design frontend/public && printf '{}\n' > frontend/src/design/manifest.json && git rm -rq design && git add -A && git commit -qm kit) >/dev/null
+check_pr 0 '' "$KR" design 'echo x > frontend/src/design/brand.json && echo y > frontend/public/logo.svg'
+check_pr 1 'design lane' "$KR" dev 'mkdir -p frontend/public && echo y > frontend/public/robots.txt'
+check_pr 0 '' "$KR" dev 'echo "// y" >> src/App.tsx'
+check_pr 1 'frontend/src/App.tsx' "$KR" design 'mkdir -p frontend/src && echo y > frontend/src/App.tsx'
+check_pr 1 'frontend/public/robots.txt' "$KR" dev 'mkdir -p frontend/public && git rm -q frontend/src/design/manifest.json && echo y > frontend/public/robots.txt'
+check_pr 1 'frontend/src/design/brand.json' "$KR" chore 'git rm -q frontend/src/design/manifest.json && mkdir -p frontend/src/design && echo y > frontend/src/design/brand.json'
+check_pr 0 '' "$KR" design 'echo "{\"v\":2}" > frontend/src/design/manifest.json && echo y > frontend/src/design/brand.json'
+check_pr 1 'no design/' "$KR" chore 'mkdir -p design && echo y > design/a.md'
 
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]
