@@ -19,8 +19,9 @@
 #     chore   the same limits as into staging (Jon, 2026-10-29: chore goes into staging or prod)
 #     any other head branch never PRs into prod
 #
-# A kit project is one whose PR checkout holds frontend/src/design/manifest.json (looked for under
-# LANE_ROOT, default the current directory: the PR's checkout) or whose changed files include it,
+# A kit project is one whose PR merge checkout holds frontend/src/design/manifest.json (looked for under
+# LANE_ROOT, default the current directory: in CI, the PR's merge checkout, which actions/checkout
+# makes by default for a pull_request event) or whose changed files include it,
 # so a PR that touches the manifest is judged by the kit rules. Its design lives in the
 # design repo and arrives through the design kit, so it has no design/ folder and its rules differ
 # (every other project keeps the rules above, unchanged):
@@ -101,9 +102,9 @@ EOF
   return 1
 }
 
-# A kit project: frontend/src/design/manifest.json exists in the PR's checkout, or is one of the
+# A kit project: frontend/src/design/manifest.json exists in the PR's merge checkout, or is one of the
 # changed files. The second test closes a bypass: a PR that deletes the manifest has no manifest in its
-# checkout, so without it the same PR could also change a kit file. A PR that touches the manifest is
+# merge checkout, so without it the same PR could also change a kit file. A PR that touches the manifest is
 # judged by the kit rules.
 KIT_ROOT="${LANE_ROOT:-.}"
 IS_KIT=0
@@ -149,6 +150,7 @@ refuse_kit() {
     echo "A kit project keeps its design in the design repo and has no design/ folder."
     echo "Offending files:$no_design"
     echo "Move the change to the design repo, or drop these paths from the $lane lane."
+    echo "Moving a project onto the design kit is a one-time merge by Jon; see docs/forgejo.md (Moving a project onto the design kit)."
   fi
   if [ -n "$owned" ]; then
     echo "The $lane lane may not change the design kit's files: they go through the design lane."

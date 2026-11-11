@@ -77,6 +77,10 @@ jobs:
   #     chore   the same limits as into staging.
   #     any other head branch fails.
   #
+  # These are the rules for a project with design/. A kit project (its PR merge checkout, or its
+  # changed files, hold frontend/src/design/manifest.json) has no design/ and its own rules: see the
+  # kit table in the README's "The lane guard" section, and scripts/lane-guard.sh's header.
+  #
   # The scripts are checked out from this repo at the commit the caller pins,
   # never at main. When the dev lane carries migrations the step summary lists
   # them. No gate report carries that flag to the dashboard: record_gate_report

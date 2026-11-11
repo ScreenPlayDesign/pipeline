@@ -224,6 +224,12 @@ check 0 -       design  design/a.md
 check_kit_says 1 'keeps its design in the design repo' dev design/a.md
 check_kit_says 1 'has no design/ folder' design design/a.md
 check_kit_says 1 'has no design/ folder' chore design/a.md
+# The migration commit itself removes design/: dropping those paths would leave a half-migration.
+MIGRATION_WORDS='Moving a project onto the design kit is a one-time merge by Jon; see docs/forgejo.md (Moving a project onto the design kit).'
+check_kit_says 1 "$MIGRATION_WORDS" dev design/a.md
+check_kit_says 1 "$MIGRATION_WORDS" design design/a.md
+check_kit_says 1 "$MIGRATION_WORDS" chore design/a.md frontend/src/design/manifest.json
+LANE_BASE=prod check_kit_says 1 "$MIGRATION_WORDS" chore design/logo.svg
 check_kit_says 1 'design lane' dev $KIT_PUB/robots.txt
 check_kit_says 1 'design lane' chore frontend/src/design/brand.json
 check_kit_says 1 "$KIT_PUB/robots.txt" dev $KIT_PUB/robots.txt

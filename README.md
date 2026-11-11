@@ -57,9 +57,10 @@ a set of files to a base (`LANE_BASE`, `staging` or `prod`);
 | prod | `chore` | may change anything but `supabase/`, a dev-only path or `design/` |
 | prod | anything else | refused |
 
-A **kit project** is one whose PR checkout holds `frontend/src/design/manifest.json`
-(looked for under `LANE_ROOT`, default the current directory, which is the PR's
-checkout in `lane-guard-pr.sh`), or whose changed files include it: a PR that
+A **kit project** is one whose PR merge checkout holds `frontend/src/design/manifest.json`
+(looked for under `LANE_ROOT`, default the current directory; in CI that is the
+PR's merge checkout, which `actions/checkout` makes by default for a
+`pull_request` event), or whose changed files include it: a PR that
 touches the manifest, a deletion too, is judged by the kit rules. Its design arrives through the design
 kit, so it has no `design/` folder, and only kit projects get these rules; every
 other project keeps the table above.
@@ -71,6 +72,12 @@ other project keeps the table above.
 | staging | `chore` | the same limits as before, plus no `design/` and no kit file |
 | prod | `staging` | may bring anything |
 | prod | `chore` | the same limits as into staging |
+
+Every lane refuses the commit that moves a project onto the design kit, since it
+removes `design/` and adds the manifest. That move is a one-time merge by Jon,
+with the project's pipeline pin bumped in the same commit: see the Playhouse's
+`docs/forgejo.md`, "Moving a project onto the design kit". The guard's refusal
+of a `design/` path in a kit project points there too.
 
 The kit's files are the design lane's alone: `frontend/src/design/`, the public
 root files (`logo.svg`, `favicon.ico`, `favicon.svg`, `apple-touch-icon.png`,
