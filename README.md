@@ -57,6 +57,30 @@ a set of files to a base (`LANE_BASE`, `staging` or `prod`);
 | prod | `chore` | may change anything but `supabase/`, a dev-only path or `design/` |
 | prod | anything else | refused |
 
+A **kit project** is one whose commit holds `frontend/src/design/manifest.json`
+(looked for under `LANE_ROOT`, default the current directory, which is the head
+commit's checkout in `lane-guard-pr.sh`). Its design arrives through the design
+kit, so it has no `design/` folder, and only kit projects get these rules; every
+other project keeps the table above.
+
+| Base | Head | Rule in a kit project |
+|---|---|---|
+| staging | `dev` | may change anything but `design/` (it has none) and the kit's files |
+| staging | `design` | may change only the kit's files and the scenes' Linux baselines |
+| staging | `chore` | the same limits as before, plus no `design/` and no kit file |
+| prod | `staging` | may bring anything |
+| prod | `chore` | the same limits as into staging |
+
+The kit's files are the design lane's alone: `frontend/src/design/`, the public
+root files (`logo.svg`, `favicon.ico`, `favicon.svg`, `apple-touch-icon.png`,
+`icon-*.png`, `og-image.*`, `robots.txt`, `humans.txt`) and
+`frontend/public/{icons,img,brand,fonts}/`. The guard reads them from
+`scripts/design-owned.txt`, a copy of `design-kit owned app` (a line ending in
+`/` is a folder). The test compares the copy with the kit at
+`project/spd-hub/app/packages/design-kit` (or `$SPD_DESIGN_KIT`) and prints a
+note when the kit is absent. To refresh the copy:
+`bun <design-kit>/src/cli.ts owned app > scripts/design-owned.txt`.
+
 Dev-only paths are `supabase/` plus the `[lanes] dev_only` list in the base's
 `spd_config.toml` (for example `frontend/src/types/db.ts`). The list is read
 from the base, so a PR cannot drop an entry and change that file in the same

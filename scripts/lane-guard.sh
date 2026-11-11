@@ -19,6 +19,19 @@
 #     chore   the same limits as into staging (Jon, 2026-10-29: chore goes into staging or prod)
 #     any other head branch never PRs into prod
 #
+# A kit project is one whose commit holds frontend/src/design/manifest.json (looked for under
+# LANE_ROOT, default the current directory: the head commit's checkout). Its design lives in the
+# design repo and arrives through the design kit, so it has no design/ folder and its rules differ
+# (every other project keeps the rules above, unchanged):
+#   every lane  (dev, design, chore) refuses a path under design/: a kit project has no design/
+#   the kit's app files   frontend/src/design/, the public root files (logo.svg, favicon.ico,
+#     robots.txt …) and frontend/public/{icons,img,brand,fonts}/, as listed in design-owned.txt
+#     beside this script, a copy of `design-kit owned app` (lane-guard.test.sh compares them)
+#   dev, chore  may not change a kit file: it goes through the design lane
+#   design      may change only a kit file and the scenes' Linux baselines
+#   base prod   staging brings anything; chore has the same limits as into staging
+# The other limits (supabase/, dev-only paths, migrations) stay as they are.
+#
 # On every lane and base, a migration lives only in supabase/migrations/ (Jon, 2026-10-28): a .sql
 # file in any other migrations/ folder, or one named like a migration (it starts with a digit)
 # anywhere but supabase/migrations/ and supabase/tests/, fails the guard.
@@ -87,6 +100,57 @@ EOF
   return 1
 }
 
+# A kit project: frontend/src/design/manifest.json exists in the head commit's checkout.
+KIT_ROOT="${LANE_ROOT:-.}"
+IS_KIT=0
+if [ -f "$KIT_ROOT/frontend/src/design/manifest.json" ]; then IS_KIT=1; fi
+
+# True when the file is one the design kit owns, by design-owned.txt (a copy of `design-kit owned app`):
+# a line ending in / is a folder prefix, any other line is a file; # starts a comment. A kit project
+# with no list cannot be judged, so the guard refuses rather than let a kit file through.
+OWNED_LIST="$HERE/design-owned.txt"
+is_kit_owned() {
+  local file="$1" entry
+  if [ ! -f "$OWNED_LIST" ]; then
+    echo "Cannot read design-owned.txt next to the lane guard: the design kit's files are unknown."
+    echo "Restore scripts/design-owned.txt in the pipeline (bun design-kit/src/cli.ts owned app > scripts/design-owned.txt)."
+    exit 1
+  fi
+  while IFS= read -r entry || [ -n "$entry" ]; do
+    case "$entry" in ''|'#'*) continue ;; esac
+    case "$entry" in
+      */) case "$file" in "$entry"*) return 0 ;; esac ;;
+      *)  if [ "$file" = "$entry" ]; then return 0; fi ;;
+    esac
+  done < "$OWNED_LIST"
+  return 1
+}
+
+# Prints why a kit project's lane may not change these design/ paths, and the kit files for the
+# lanes that may not change those either; exits 1 when it printed anything. Call as
+# refuse_kit <lane> <check kit files: yes|no> <files…>. Does nothing outside a kit project.
+refuse_kit() {
+  local lane="$1" kit_files="$2" f no_design="" owned=""
+  shift 2
+  [ "$IS_KIT" -eq 1 ] || return 0
+  for f in "$@"; do
+    case "$f" in design/*) no_design="$no_design $f"; continue ;; esac
+    if [ "$kit_files" = yes ] && is_kit_owned "$f"; then owned="$owned $f"; fi
+  done
+  if [ -n "$no_design" ]; then
+    echo "A kit project keeps its design in the design repo and has no design/ folder."
+    echo "Offending files:$no_design"
+    echo "Move the change to the design repo, or drop these paths from the $lane lane."
+  fi
+  if [ -n "$owned" ]; then
+    echo "The $lane lane may not change the design kit's files: they go through the design lane."
+    echo "Offending files:$owned"
+    echo "Move those changes to a design lane pull request."
+  fi
+  if [ -n "$no_design$owned" ]; then exit 1; fi
+  return 0
+}
+
 # A migration outside supabase/migrations/ is refused on every lane, whatever the base: checked where a
 # lane would otherwise pass, so a lane's own refusal speaks first.
 refuse_misplaced() {
@@ -112,6 +176,22 @@ refuse_misplaced() {
 # The chore lane, into staging or prod: anything but supabase/, a dev-only path or design/.
 guard_chore() {
   local f offending=""
+  if [ "$IS_KIT" -eq 1 ]; then
+    # In a kit project design/ is not a path at all, and the kit's files are the design lane's.
+    local kit_out
+    kit_out="$(refuse_kit chore yes "$@")" || { printf '%s\n' "$kit_out"; exit 1; }
+    for f in "$@"; do
+      if is_dev_only "$f"; then offending="$offending $f"; fi
+    done
+    if [ -n "$offending" ]; then
+      echo "The chore lane may not change supabase/ or a dev-only path."
+      echo "Offending files:$offending"
+      exit 1
+    fi
+    echo "The chore lane changes no supabase/, dev-only or design kit path."
+    refuse_misplaced "$@"
+    exit 0
+  fi
   for f in "$@"; do
     case "$f" in design/*) offending="$offending $f"; continue ;; esac
     if is_dev_only "$f"; then offending="$offending $f"; fi
@@ -130,6 +210,12 @@ case "$BASE" in
   staging)
     case "$LANE" in
       dev)
+        if [ "$IS_KIT" -eq 1 ]; then
+          refuse_kit dev yes "$@"
+          echo "The dev lane changes no design kit file and no design/ path."
+          refuse_misplaced "$@"
+          exit 0
+        fi
         offending=""
         for f in "$@"; do
           case "$f" in design/*) offending="$offending $f" ;; esac
@@ -143,6 +229,23 @@ case "$BASE" in
         refuse_misplaced "$@"
         exit 0 ;;
       design)
+        if [ "$IS_KIT" -eq 1 ]; then
+          refuse_kit design no "$@"
+          offending=""
+          for f in "$@"; do
+            case "$f" in screenplay/*-snapshots/*-linux.png) continue ;; esac
+            if ! is_kit_owned "$f"; then offending="$offending $f"; fi
+          done
+          if [ -n "$offending" ]; then
+            echo "The design lane of a kit project may change only the design kit's files and the scenes' Linux baselines."
+            echo "Offending files:$offending"
+            echo "The kit's files are listed in design-owned.txt next to the lane guard; anything else is the dev lane's."
+            exit 1
+          fi
+          echo "The design lane changes only the design kit's files and the scenes' Linux baselines."
+          refuse_misplaced "$@"
+          exit 0
+        fi
         offending=""
         for f in "$@"; do
           case "$f" in

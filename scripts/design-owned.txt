@@ -1,0 +1,17 @@
+# from @spd/design-kit 2.0.0: design-kit owned app
+frontend/public/brand/
+frontend/public/fonts/
+frontend/public/icons/
+frontend/public/img/
+frontend/src/design/
+frontend/public/apple-touch-icon.png
+frontend/public/favicon.ico
+frontend/public/favicon.svg
+frontend/public/humans.txt
+frontend/public/icon-192.png
+frontend/public/icon-512.png
+frontend/public/icon-maskable-512.png
+frontend/public/logo.svg
+frontend/public/og-image.jpg
+frontend/public/og-image.png
+frontend/public/robots.txt
