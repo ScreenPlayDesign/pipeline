@@ -19,8 +19,9 @@
 #     chore   the same limits as into staging (Jon, 2026-10-29: chore goes into staging or prod)
 #     any other head branch never PRs into prod
 #
-# A kit project is one whose commit holds frontend/src/design/manifest.json (looked for under
-# LANE_ROOT, default the current directory: the head commit's checkout). Its design lives in the
+# A kit project is one whose PR checkout holds frontend/src/design/manifest.json (looked for under
+# LANE_ROOT, default the current directory: the PR's checkout) or whose changed files include it,
+# so a PR that touches the manifest is judged by the kit rules. Its design lives in the
 # design repo and arrives through the design kit, so it has no design/ folder and its rules differ
 # (every other project keeps the rules above, unchanged):
 #   every lane  (dev, design, chore) refuses a path under design/: a kit project has no design/
@@ -100,10 +101,16 @@ EOF
   return 1
 }
 
-# A kit project: frontend/src/design/manifest.json exists in the head commit's checkout.
+# A kit project: frontend/src/design/manifest.json exists in the PR's checkout, or is one of the
+# changed files. The second test closes a bypass: a PR that deletes the manifest has no manifest in its
+# checkout, so without it the same PR could also change a kit file. A PR that touches the manifest is
+# judged by the kit rules.
 KIT_ROOT="${LANE_ROOT:-.}"
 IS_KIT=0
 if [ -f "$KIT_ROOT/frontend/src/design/manifest.json" ]; then IS_KIT=1; fi
+for f in "$@"; do
+  if [ "$f" = frontend/src/design/manifest.json ]; then IS_KIT=1; fi
+done
 
 # True when the file is one the design kit owns, by design-owned.txt (a copy of `design-kit owned app`):
 # a line ending in / is a folder prefix, any other line is a file; # starts a comment. A kit project
@@ -117,6 +124,7 @@ is_kit_owned() {
     exit 1
   fi
   while IFS= read -r entry || [ -n "$entry" ]; do
+    entry="${entry%$'\r'}"   # a CRLF list must still match
     case "$entry" in ''|'#'*) continue ;; esac
     case "$entry" in
       */) case "$file" in "$entry"*) return 0 ;; esac ;;

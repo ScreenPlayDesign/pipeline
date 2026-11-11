@@ -166,7 +166,7 @@ check 0 "$MULTI"               design design/a.md design/b.tsx
 check 0 "$DB_TS"               dev    src/types/db.ts supabase/config.toml
 check 0 "$DB_TS"               design design/supabase-notes.md
 
-# ── A kit project: the commit holds frontend/src/design/manifest.json ──────
+# ── A kit project: the PR's checkout holds frontend/src/design/manifest.json ──
 # Its design lane owns the kit's app files (scripts/design-owned.txt) and its dev and chore lanes
 # do not; it has no design/ folder, so every lane refuses design/. Any other project is unchanged.
 KIT_PUB=frontend/public
@@ -390,13 +390,38 @@ check_pr 0 '' "$MR" dev "printf 'alter table t add column a int;\n' > supabase/m
 check_pr 0 '' "$MR" dev "printf -- '-- forward-only: drops nothing, adds a nullable column\nalter table t add column a int;\n' > supabase/migrations/002_add.sql"
 check_pr 1 'forward-only' "$MR" dev "printf -- '-- forward-only:\nalter table t add column a int;\n' > supabase/migrations/002_add.sql"
 
-# A kit project through lane-guard-pr.sh: the checkout is the head commit, so its manifest makes the kit.
+# A PR that touches the manifest is a kit PR: deleting it does not free the kit's files.
+check 1 - dev   frontend/src/design/manifest.json $KIT_PUB/robots.txt
+check 1 - dev   frontend/src/design/manifest.json frontend/src/design/brand.json
+check 1 - chore frontend/src/design/manifest.json $KIT_PUB/robots.txt
+checkb 1 - prod chore frontend/src/design/manifest.json $KIT_PUB/robots.txt
+check 1 - dev   frontend/src/design/manifest.json design/a.md
+check 1 - chore frontend/src/design/manifest.json design/a.md
+check 0 - design frontend/src/design/manifest.json frontend/src/design/brand.json $KIT_PUB/logo.svg
+check 1 - design frontend/src/design/manifest.json frontend/src/App.tsx
+check 1 - dev   frontend/src/design/manifest.json frontend/src/App.tsx   # the manifest is the design lane's
+# A CRLF design-owned.txt still matches (the guard runs from a copy beside such a list).
+CRLF_DIR="$(mktemp -d "$WORK/crlf.XXXXXX")"
+cp "$GUARD" "$CRLF_DIR/lane-guard.sh"
+sed 's/$/\r/' "$HERE/design-owned.txt" > "$CRLF_DIR/design-owned.txt"
+crlf_dir="$(mktemp -d "$WORK/case.XXXXXX")"
+mkdir -p "$crlf_dir/frontend/src/design" && printf '{}\n' > "$crlf_dir/frontend/src/design/manifest.json"
+for f in $KIT_PUB/robots.txt frontend/src/design/brand.json $KIT_PUB/icons/a.svg; do
+  out="$(cd "$crlf_dir" && bash "$CRLF_DIR/lane-guard.sh" dev "$f" 2>&1)"; code=$?
+  if [ "$code" = 1 ]; then pass=$((pass + 1)); echo "ok   crlf list, dev $f -> 1"
+  else fail=$((fail + 1)); echo "FAIL crlf list, dev $f -> exit $code; output: ${out:-<none>}"; fi
+done
+
+# A kit project through lane-guard-pr.sh: the checkout is the PR's, so its manifest makes the kit.
 KR="$(new_repo yes)"
 (cd "$KR" && git checkout -q staging && mkdir -p frontend/src/design frontend/public && printf '{}\n' > frontend/src/design/manifest.json && git rm -rq design && git add -A && git commit -qm kit) >/dev/null
 check_pr 0 '' "$KR" design 'echo x > frontend/src/design/brand.json && echo y > frontend/public/logo.svg'
 check_pr 1 'design lane' "$KR" dev 'mkdir -p frontend/public && echo y > frontend/public/robots.txt'
 check_pr 0 '' "$KR" dev 'echo "// y" >> src/App.tsx'
 check_pr 1 'frontend/src/App.tsx' "$KR" design 'mkdir -p frontend/src && echo y > frontend/src/App.tsx'
+check_pr 1 'frontend/public/robots.txt' "$KR" dev 'mkdir -p frontend/public && git rm -q frontend/src/design/manifest.json && echo y > frontend/public/robots.txt'
+check_pr 1 'frontend/src/design/brand.json' "$KR" chore 'git rm -q frontend/src/design/manifest.json && mkdir -p frontend/src/design && echo y > frontend/src/design/brand.json'
+check_pr 0 '' "$KR" design 'echo "{\"v\":2}" > frontend/src/design/manifest.json && echo y > frontend/src/design/brand.json'
 check_pr 1 'no design/' "$KR" chore 'mkdir -p design && echo y > design/a.md'
 
 echo "$pass passed, $fail failed"
